@@ -1,5 +1,5 @@
 use eframe::egui::load::SizedTexture;
-use eframe::egui::{Context, Ui};
+use eframe::egui::{Context, PointerButton, Pos2, Ui};
 use eframe::{egui, NativeOptions};
 use std::collections::VecDeque;
 use std::io::{Read, Write};
@@ -8,6 +8,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
+use winapi::um::winuser::{self, SendInput, INPUT, INPUT_MOUSE, MOUSEINPUT};
 
 fn start_ffmpeg() -> Child {
     let ffmpeg = Command::new("ffmpeg")
@@ -70,10 +71,12 @@ struct MyApp {
     elapsed_time: f32,
     frame_queue: Arc<Mutex<VecDeque<Vec<u8>>>>,
     current_frame: Vec<u8>,
+    width: f32,
+    height: f32,
 }
 
 impl MyApp {
-    fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    fn new(_cc: &eframe::CreationContext<'_>, width: f32, height: f32) -> Self {
         let socket = TcpStream::connect("127.0.0.1:7643").expect("Couldn't connect to the server.");
 
         let mut ffmpeg = start_ffmpeg();
@@ -92,6 +95,61 @@ impl MyApp {
             elapsed_time: 0.,
             frame_queue,
             current_frame: vec![0u8; 1920 * 1080 * 4],
+            width,
+            height,
+        }
+    }
+
+    fn update_size(&mut self, ctx: &Context) {
+        let size = ctx.screen_rect().size();
+        if self.width != size.x {
+            self.width = size.x;
+        }
+        if self.height != size.y {
+            self.height = size.y;
+        }
+    }
+
+    fn normalize_mouse_position(&self, mouse_position: Pos2) -> (i32, i32) {
+        let x = (mouse_position.x / self.width) * 65535.0;
+        let y = (mouse_position.y / self.height) * 65535.0;
+        (x as i32, y as i32)
+    }
+
+    fn send_mouse_click(&self, mouse_position: Pos2, button: PointerButton) {
+        unsafe {
+            let (mouse_x, mouse_y) = self.normalize_mouse_position(mouse_position);
+            // Currently also moves the cursor, will be changed in the future so that
+            // the cursor always moved to the right location
+            let mut flags: u32 = winuser::MOUSEEVENTF_ABSOLUTE | winuser::MOUSEEVENTF_MOVE;
+            if button == PointerButton::Primary {
+                flags |= winuser::MOUSEEVENTF_LEFTDOWN | winuser::MOUSEEVENTF_LEFTUP;
+            } else if button == PointerButton::Secondary {
+                flags |= winuser::MOUSEEVENTF_RIGHTDOWN | winuser::MOUSEEVENTF_RIGHTUP;
+            } else if button == PointerButton::Middle {
+                flags |= winuser::MOUSEEVENTF_MIDDLEDOWN | winuser::MOUSEEVENTF_MIDDLEUP;
+            }
+
+            let click_up_input = INPUT {
+                type_: INPUT_MOUSE,
+                u: {
+                    let mut mi = std::mem::zeroed::<MOUSEINPUT>();
+                    mi.dx = mouse_x;
+                    mi.dy = mouse_y;
+                    mi.mouseData = 0;
+                    mi.dwFlags = flags;
+                    mi.time = 0;
+                    mi.dwExtraInfo = 0;
+                    std::mem::transmute(mi)
+                },
+            };
+
+            let mut inputs = [click_up_input];
+            SendInput(
+                inputs.len() as u32,
+                inputs.as_mut_ptr(),
+                std::mem::size_of::<INPUT>() as i32,
+            );
         }
     }
 
@@ -109,8 +167,17 @@ impl MyApp {
         ui.image(sized_texture);
 
         ui.input(|input| {
-            if input.pointer.button_pressed(egui::PointerButton::Primary) {
-                println!("{:?}", input.pointer.latest_pos());
+            if input.pointer.primary_released() {
+                self.send_mouse_click(input.pointer.latest_pos().unwrap(), PointerButton::Primary);
+            }
+            if input.pointer.secondary_released() {
+                self.send_mouse_click(
+                    input.pointer.latest_pos().unwrap(),
+                    PointerButton::Secondary,
+                );
+            }
+            if input.pointer.button_released(PointerButton::Middle) {
+                self.send_mouse_click(input.pointer.latest_pos().unwrap(), PointerButton::Middle);
             }
         });
 
@@ -125,6 +192,8 @@ impl eframe::App for MyApp {
         self.now = now;
         self.elapsed_time += self.dt;
 
+        self.update_size(ctx);
+
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
@@ -134,6 +203,7 @@ impl eframe::App for MyApp {
 }
 
 fn main() {
+    let (width, height): (f32, f32) = (600.0 * 1920.0 / 1080.0, 600.0);
     let options = NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([600.0 * 1920.0 / 1080.0, 600.0]),
@@ -144,6 +214,6 @@ fn main() {
     let _ = eframe::run_native(
         "Screen Capture",
         options,
-        Box::new(move |cc| Ok(Box::new(MyApp::new(cc)))),
+        Box::new(move |cc| Ok(Box::new(MyApp::new(cc, width, height)))),
     );
 }
