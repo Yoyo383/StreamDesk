@@ -12,7 +12,19 @@ use std::time::Instant;
 fn start_ffmpeg() -> Child {
     let ffmpeg = Command::new("ffmpeg")
         .args([
-            "-f", "h264", "-i", "-", "-f", "rawvideo", "-pix_fmt", "rgba", "-",
+            "-flags",
+            "low_delay",
+            "-fflags",
+            "discardcorrupt",
+            "-f",
+            "h264",
+            "-i",
+            "-",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgba",
+            "-",
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -44,13 +56,10 @@ fn thread_read_decoded(frame_queue: Arc<Mutex<VecDeque<Vec<u8>>>>, mut stdout: C
 
             let mut queue = frame_queue.lock().unwrap();
 
-            if queue.len() > 30 {
+            if queue.len() > 1 {
                 queue.pop_front();
             }
             queue.push_back(rgba_buffer.clone());
-
-            //queue.push_back(rgba_buffer.clone());
-            //*latest_frame.lock().unwrap() = Some(rgba_buffer.clone());
         }
     });
 }
@@ -94,11 +103,6 @@ impl MyApp {
             }
         }
 
-        ui.label(format!("FPS: {:.1}", 1. / self.dt));
-        ui.label(format!("Queue: {}", self.frame_queue.lock().unwrap().len()));
-
-        // println!("{}", self.current_frame_texture.is_none());
-
         let texture = egui::ColorImage::from_rgba_unmultiplied([1920, 1080], &self.current_frame);
         let handle = ctx.load_texture("screen", texture, egui::TextureOptions::default());
         let sized_texture = SizedTexture::new(&handle, ui.available_size());
@@ -120,13 +124,6 @@ impl eframe::App for MyApp {
         self.dt = now.duration_since(self.now).as_secs_f32();
         self.now = now;
         self.elapsed_time += self.dt;
-
-        // println!("{}", 1. / self.dt);
-
-        // let pixels = png_to_rgba(png_data);
-
-        // let texture = egui::ColorImage::from_rgba_unmultiplied([1920, 1080], &pixels);
-        // let handle = ctx.load_texture("screen", texture, egui::TextureOptions::default());
 
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
