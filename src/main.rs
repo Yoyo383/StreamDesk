@@ -1,6 +1,7 @@
 use eframe::egui::load::SizedTexture;
 use eframe::egui::{Context, Ui};
 use eframe::{egui, NativeOptions};
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -22,13 +23,34 @@ fn start_ffmpeg() -> Child {
     ffmpeg
 }
 
-fn thread_read_decoded(latest_frame: Arc<Mutex<Option<Vec<u8>>>>, mut stdout: ChildStdout) {
+fn thread_receive_encoded(mut socket: TcpStream, mut stdin: ChildStdin) {
+    thread::spawn(move || loop {
+        let mut len_buffer = [0u8; 8];
+        socket.read_exact(&mut len_buffer).unwrap();
+        let len = u64::from_be_bytes(len_buffer);
+
+        let mut packet = vec![0u8; len as usize];
+        socket.read_exact(&mut packet).unwrap();
+
+        stdin.write_all(&packet).unwrap();
+    });
+}
+
+fn thread_read_decoded(frame_queue: Arc<Mutex<VecDeque<Vec<u8>>>>, mut stdout: ChildStdout) {
     thread::spawn(move || {
         let mut rgba_buffer = vec![0u8; 1920 * 1080 * 4];
         loop {
             stdout.read_exact(&mut rgba_buffer).unwrap();
 
-            *latest_frame.lock().unwrap() = Some(rgba_buffer.clone());
+            let mut queue = frame_queue.lock().unwrap();
+
+            if queue.len() > 30 {
+                queue.pop_front();
+            }
+            queue.push_back(rgba_buffer.clone());
+
+            //queue.push_back(rgba_buffer.clone());
+            //*latest_frame.lock().unwrap() = Some(rgba_buffer.clone());
         }
     });
 }
@@ -36,9 +58,9 @@ fn thread_read_decoded(latest_frame: Arc<Mutex<Option<Vec<u8>>>>, mut stdout: Ch
 struct MyApp {
     now: Instant,
     dt: f32,
-    socket: TcpStream,
-    stdin: ChildStdin,
-    latest_frame: Arc<Mutex<Option<Vec<u8>>>>,
+    elapsed_time: f32,
+    frame_queue: Arc<Mutex<VecDeque<Vec<u8>>>>,
+    current_frame: Vec<u8>,
 }
 
 impl MyApp {
@@ -49,27 +71,38 @@ impl MyApp {
         let stdin = ffmpeg.stdin.take().unwrap();
         let stdout = ffmpeg.stdout.take().unwrap();
 
-        let latest_frame = Arc::new(Mutex::new(None));
-        let latest_frame_clone = latest_frame.clone();
+        let frame_queue = Arc::new(Mutex::new(VecDeque::new()));
+        let frame_queue_clone = frame_queue.clone();
 
-        thread_read_decoded(latest_frame_clone, stdout);
+        thread_receive_encoded(socket, stdin);
+        thread_read_decoded(frame_queue_clone, stdout);
 
         Self {
             now: Instant::now(),
             dt: 0.,
-            socket,
-            stdin,
-            latest_frame,
+            elapsed_time: 0.,
+            frame_queue,
+            current_frame: vec![0u8; 1920 * 1080 * 4],
         }
     }
 
     fn render(&mut self, ui: &mut Ui, ctx: &Context) {
-        if let Some(image) = &*self.latest_frame.lock().unwrap() {
-            let texture = egui::ColorImage::from_rgba_unmultiplied([1920, 1080], image);
-            let handle = ctx.load_texture("screen", texture, egui::TextureOptions::default());
-            let sized_texture = SizedTexture::new(&handle, ui.available_size());
-            ui.image(sized_texture);
+        if self.elapsed_time > 1. / 30. {
+            self.elapsed_time = 0.;
+            if let Some(image) = self.frame_queue.lock().unwrap().pop_front() {
+                self.current_frame = image;
+            }
         }
+
+        ui.label(format!("FPS: {:.1}", 1. / self.dt));
+        ui.label(format!("Queue: {}", self.frame_queue.lock().unwrap().len()));
+
+        // println!("{}", self.current_frame_texture.is_none());
+
+        let texture = egui::ColorImage::from_rgba_unmultiplied([1920, 1080], &self.current_frame);
+        let handle = ctx.load_texture("screen", texture, egui::TextureOptions::default());
+        let sized_texture = SizedTexture::new(&handle, ui.available_size());
+        ui.image(sized_texture);
 
         ui.input(|input| {
             if input.pointer.button_pressed(egui::PointerButton::Primary) {
@@ -86,17 +119,9 @@ impl eframe::App for MyApp {
         let now = Instant::now();
         self.dt = now.duration_since(self.now).as_secs_f32();
         self.now = now;
+        self.elapsed_time += self.dt;
 
         // println!("{}", 1. / self.dt);
-
-        let mut len_buffer = [0u8; 8];
-        self.socket.read_exact(&mut len_buffer).unwrap();
-        let len = u64::from_be_bytes(len_buffer);
-
-        let mut packet = vec![0u8; len as usize];
-        self.socket.read_exact(&mut packet).unwrap();
-
-        self.stdin.write_all(&packet).unwrap();
 
         // let pixels = png_to_rgba(png_data);
 
