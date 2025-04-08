@@ -1,5 +1,5 @@
 use eframe::egui::load::SizedTexture;
-use eframe::egui::{Context, PointerButton, Pos2, Ui};
+use eframe::egui::{Context, Event, Key, Modifiers, PointerButton, Pos2, Ui};
 use eframe::{egui, NativeOptions};
 use std::collections::VecDeque;
 use std::io::{Read, Write};
@@ -8,7 +8,10 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
-use winapi::um::winuser::{self, SendInput, INPUT, INPUT_MOUSE, MOUSEINPUT};
+use winapi::um::winuser::{
+    self, SendInput, INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP, MOUSEINPUT,
+    VK_CONTROL, VK_HOME, VK_SHIFT,
+};
 
 fn start_ffmpeg() -> Child {
     let ffmpeg = Command::new("ffmpeg")
@@ -63,6 +66,78 @@ fn thread_read_decoded(frame_queue: Arc<Mutex<VecDeque<Vec<u8>>>>, mut stdout: C
             queue.push_back(rgba_buffer.clone());
         }
     });
+}
+
+pub fn egui_key_to_vk(key: &Key) -> Option<u16> {
+    use winapi::um::winuser::*;
+    use Key::*;
+
+    Some(match key {
+        ArrowDown => VK_DOWN as u16,
+        ArrowLeft => VK_LEFT as u16,
+        ArrowRight => VK_RIGHT as u16,
+        ArrowUp => VK_UP as u16,
+        Escape => VK_ESCAPE as u16,
+        Tab => VK_TAB as u16,
+        Backspace => VK_BACK as u16,
+        Enter => VK_RETURN as u16,
+        Space => VK_SPACE as u16,
+        Insert => VK_INSERT as u16,
+        Delete => VK_DELETE as u16,
+        Home => VK_HOME as u16,
+        End => VK_END as u16,
+        PageUp => VK_PRIOR as u16,
+        PageDown => VK_NEXT as u16,
+        A => 0x41,
+        B => 0x42,
+        C => 0x43,
+        D => 0x44,
+        E => 0x45,
+        F => 0x46,
+        G => 0x47,
+        H => 0x48,
+        I => 0x49,
+        J => 0x4A,
+        K => 0x4B,
+        L => 0x4C,
+        M => 0x4D,
+        N => 0x4E,
+        O => 0x4F,
+        P => 0x50,
+        Q => 0x51,
+        R => 0x52,
+        S => 0x53,
+        T => 0x54,
+        U => 0x55,
+        V => 0x56,
+        W => 0x57,
+        X => 0x58,
+        Y => 0x59,
+        Z => 0x5A,
+        Num0 => 0x30,
+        Num1 => 0x31,
+        Num2 => 0x32,
+        Num3 => 0x33,
+        Num4 => 0x34,
+        Num5 => 0x35,
+        Num6 => 0x36,
+        Num7 => 0x37,
+        Num8 => 0x38,
+        Num9 => 0x39,
+        F1 => VK_F1 as u16,
+        F2 => VK_F2 as u16,
+        F3 => VK_F3 as u16,
+        F4 => VK_F4 as u16,
+        F5 => VK_F5 as u16,
+        F6 => VK_F6 as u16,
+        F7 => VK_F7 as u16,
+        F8 => VK_F8 as u16,
+        F9 => VK_F9 as u16,
+        F10 => VK_F10 as u16,
+        F11 => VK_F11 as u16,
+        F12 => VK_F12 as u16,
+        _ => return None,
+    })
 }
 
 struct MyApp {
@@ -153,6 +228,55 @@ impl MyApp {
         }
     }
 
+    fn send_virtual_key(&self, vk: u16, pressed: bool) {
+        unsafe {
+            let mut input: INPUT = std::mem::zeroed();
+            input.type_ = INPUT_KEYBOARD;
+            *input.u.ki_mut() = KEYBDINPUT {
+                wVk: vk,
+                wScan: 0,
+                dwFlags: if pressed { 0 } else { KEYEVENTF_KEYUP },
+                time: 0,
+                dwExtraInfo: 0,
+            };
+
+            let mut inputs = [input];
+            SendInput(
+                inputs.len() as u32,
+                inputs.as_mut_ptr(),
+                std::mem::size_of::<INPUT>() as i32,
+            );
+        }
+    }
+
+    fn send_key_input_pressed(&self, vk: u16, modifiers: &Modifiers) {
+        if modifiers.ctrl {
+            self.send_virtual_key(VK_CONTROL as u16, true);
+        }
+        if modifiers.alt {
+            self.send_virtual_key(VK_HOME as u16, true);
+        }
+        if modifiers.shift {
+            self.send_virtual_key(VK_SHIFT as u16, true);
+        }
+
+        self.send_virtual_key(vk, true);
+    }
+
+    fn send_key_input_released(&self, vk: u16, modifiers: &Modifiers) {
+        self.send_virtual_key(vk, false);
+
+        if modifiers.ctrl {
+            self.send_virtual_key(VK_CONTROL as u16, false);
+        }
+        if modifiers.alt {
+            self.send_virtual_key(VK_HOME as u16, false);
+        }
+        if modifiers.shift {
+            self.send_virtual_key(VK_SHIFT as u16, false);
+        }
+    }
+
     fn render(&mut self, ui: &mut Ui, ctx: &Context) {
         if self.elapsed_time > 1. / 30. {
             self.elapsed_time = 0.;
@@ -178,6 +302,26 @@ impl MyApp {
             }
             if input.pointer.button_released(PointerButton::Middle) {
                 self.send_mouse_click(input.pointer.latest_pos().unwrap(), PointerButton::Middle);
+            }
+
+            for event in &input.raw.events {
+                match event {
+                    Event::Key {
+                        key,
+                        pressed,
+                        modifiers,
+                        ..
+                    } => {
+                        if let Some(vk) = egui_key_to_vk(key) {
+                            if *pressed {
+                                self.send_key_input_pressed(vk, modifiers);
+                            } else {
+                                self.send_key_input_released(vk, modifiers);
+                            }
+                        }
+                    }
+                    _ => (),
+                }
             }
         });
 
