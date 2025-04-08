@@ -41,11 +41,11 @@ fn thread_receive_encoded(mut socket: TcpStream, mut stdin: ChildStdin) {
     thread::spawn(move || {
         while !STOP.load(Ordering::Relaxed) {
             let mut len_buffer = [0u8; 8];
-            socket.read(&mut len_buffer).unwrap();
+            socket.read_exact(&mut len_buffer).unwrap();
             let len = u64::from_be_bytes(len_buffer);
 
             let mut packet = vec![0u8; len as usize];
-            socket.read(&mut packet).unwrap();
+            socket.read_exact(&mut packet).unwrap();
 
             stdin.write_all(&packet).unwrap();
         }
@@ -82,9 +82,6 @@ struct MyApp {
 impl MyApp {
     fn new(_cc: &eframe::CreationContext<'_>, width: f32, height: f32) -> Self {
         let socket = TcpStream::connect("127.0.0.1:7643").expect("Couldn't connect to the server.");
-
-        // let stream_socket =
-        //     TcpStream::connect("127.0.0.1:7644").expect("Couldn't connect to the server.");
 
         let mut ffmpeg = start_ffmpeg();
         let stdin = ffmpeg.stdin.take().unwrap();

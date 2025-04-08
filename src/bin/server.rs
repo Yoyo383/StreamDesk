@@ -104,17 +104,7 @@ fn handle_connection(mut socket: TcpStream) {
 
     let mut now = Instant::now();
 
-    // let listener = TcpListener::bind("0.0.0.0:7644").expect("Could not bind listener");
-    // match listener.accept() {
-    //     Ok((stream_socket, _addr)) => thread_read_encoded(stream_socket, stdout),
-    //     Err(e) => println!("Couldn't accept client: {e:?}"),
-    // }
-
     thread_read_encoded(socket.try_clone().unwrap(), stdout);
-
-    // let mut buffer = [0u8; 4096];
-
-    // thread_read_encoded(socket, stdout);
 
     let mut buffer = vec![0u8; Message::size()];
 
