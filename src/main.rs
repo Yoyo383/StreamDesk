@@ -1,14 +1,15 @@
 use eframe::egui::load::SizedTexture;
 use eframe::egui::{Context, PointerButton, Pos2, Ui};
 use eframe::{egui, NativeOptions};
+use remote_desktop::protocol::{Message, MessageType};
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
-use winapi::um::winuser::{self, SendInput, INPUT, INPUT_MOUSE, MOUSEINPUT};
 
 fn start_ffmpeg() -> Child {
     let ffmpeg = Command::new("ffmpeg")
@@ -37,22 +38,24 @@ fn start_ffmpeg() -> Child {
 }
 
 fn thread_receive_encoded(mut socket: TcpStream, mut stdin: ChildStdin) {
-    thread::spawn(move || loop {
-        let mut len_buffer = [0u8; 8];
-        socket.read_exact(&mut len_buffer).unwrap();
-        let len = u64::from_be_bytes(len_buffer);
+    thread::spawn(move || {
+        while !STOP.load(Ordering::Relaxed) {
+            let mut len_buffer = [0u8; 8];
+            socket.read(&mut len_buffer).unwrap();
+            let len = u64::from_be_bytes(len_buffer);
 
-        let mut packet = vec![0u8; len as usize];
-        socket.read_exact(&mut packet).unwrap();
+            let mut packet = vec![0u8; len as usize];
+            socket.read(&mut packet).unwrap();
 
-        stdin.write_all(&packet).unwrap();
+            stdin.write_all(&packet).unwrap();
+        }
     });
 }
 
 fn thread_read_decoded(frame_queue: Arc<Mutex<VecDeque<Vec<u8>>>>, mut stdout: ChildStdout) {
     thread::spawn(move || {
         let mut rgba_buffer = vec![0u8; 1920 * 1080 * 4];
-        loop {
+        while !STOP.load(Ordering::Relaxed) {
             stdout.read_exact(&mut rgba_buffer).unwrap();
 
             let mut queue = frame_queue.lock().unwrap();
@@ -70,6 +73,7 @@ struct MyApp {
     dt: f32,
     elapsed_time: f32,
     frame_queue: Arc<Mutex<VecDeque<Vec<u8>>>>,
+    socket: TcpStream,
     current_frame: Vec<u8>,
     width: f32,
     height: f32,
@@ -79,6 +83,9 @@ impl MyApp {
     fn new(_cc: &eframe::CreationContext<'_>, width: f32, height: f32) -> Self {
         let socket = TcpStream::connect("127.0.0.1:7643").expect("Couldn't connect to the server.");
 
+        // let stream_socket =
+        //     TcpStream::connect("127.0.0.1:7644").expect("Couldn't connect to the server.");
+
         let mut ffmpeg = start_ffmpeg();
         let stdin = ffmpeg.stdin.take().unwrap();
         let stdout = ffmpeg.stdout.take().unwrap();
@@ -86,7 +93,7 @@ impl MyApp {
         let frame_queue = Arc::new(Mutex::new(VecDeque::new()));
         let frame_queue_clone = frame_queue.clone();
 
-        thread_receive_encoded(socket, stdin);
+        thread_receive_encoded(socket.try_clone().unwrap(), stdin);
         thread_read_decoded(frame_queue_clone, stdout);
 
         Self {
@@ -94,6 +101,7 @@ impl MyApp {
             dt: 0.,
             elapsed_time: 0.,
             frame_queue,
+            socket,
             current_frame: vec![0u8; 1920 * 1080 * 4],
             width,
             height,
@@ -116,43 +124,6 @@ impl MyApp {
         (x as i32, y as i32)
     }
 
-    fn send_mouse_click(&self, mouse_position: Pos2, button: PointerButton) {
-        unsafe {
-            let (mouse_x, mouse_y) = self.normalize_mouse_position(mouse_position);
-            // Currently also moves the cursor, will be changed in the future so that
-            // the cursor always moved to the right location
-            let mut flags: u32 = winuser::MOUSEEVENTF_ABSOLUTE | winuser::MOUSEEVENTF_MOVE;
-            if button == PointerButton::Primary {
-                flags |= winuser::MOUSEEVENTF_LEFTDOWN | winuser::MOUSEEVENTF_LEFTUP;
-            } else if button == PointerButton::Secondary {
-                flags |= winuser::MOUSEEVENTF_RIGHTDOWN | winuser::MOUSEEVENTF_RIGHTUP;
-            } else if button == PointerButton::Middle {
-                flags |= winuser::MOUSEEVENTF_MIDDLEDOWN | winuser::MOUSEEVENTF_MIDDLEUP;
-            }
-
-            let click_up_input = INPUT {
-                type_: INPUT_MOUSE,
-                u: {
-                    let mut mi = std::mem::zeroed::<MOUSEINPUT>();
-                    mi.dx = mouse_x;
-                    mi.dy = mouse_y;
-                    mi.mouseData = 0;
-                    mi.dwFlags = flags;
-                    mi.time = 0;
-                    mi.dwExtraInfo = 0;
-                    std::mem::transmute(mi)
-                },
-            };
-
-            let mut inputs = [click_up_input];
-            SendInput(
-                inputs.len() as u32,
-                inputs.as_mut_ptr(),
-                std::mem::size_of::<INPUT>() as i32,
-            );
-        }
-    }
-
     fn render(&mut self, ui: &mut Ui, ctx: &Context) {
         if self.elapsed_time > 1. / 30. {
             self.elapsed_time = 0.;
@@ -167,21 +138,45 @@ impl MyApp {
         ui.image(sized_texture);
 
         ui.input(|input| {
-            if input.pointer.primary_released() {
-                self.send_mouse_click(input.pointer.latest_pos().unwrap(), PointerButton::Primary);
-            }
-            if input.pointer.secondary_released() {
-                self.send_mouse_click(
-                    input.pointer.latest_pos().unwrap(),
-                    PointerButton::Secondary,
-                );
-            }
-            if input.pointer.button_released(PointerButton::Middle) {
-                self.send_mouse_click(input.pointer.latest_pos().unwrap(), PointerButton::Middle);
+            for event in &input.events {
+                match event {
+                    egui::Event::PointerButton {
+                        pos,
+                        button,
+                        pressed,
+                        ..
+                    } => {
+                        let mouse_position = self.normalize_mouse_position(*pos);
+                        let message =
+                            Message::new(MessageType::Mouse, *button, mouse_position, 0, *pressed);
+                        let bytes = message.to_bytes();
+
+                        self.socket.write_all(&bytes).unwrap();
+                    }
+                    _ => (),
+                }
             }
         });
 
         ctx.request_repaint();
+    }
+}
+
+impl Drop for MyApp {
+    fn drop(&mut self) {
+        STOP.store(true, Ordering::Relaxed);
+        let message = Message::new(
+            MessageType::Shutdown,
+            PointerButton::Primary,
+            (0, 0),
+            0,
+            false,
+        );
+        self.socket.write_all(&message.to_bytes()).unwrap();
+
+        self.socket
+            .shutdown(std::net::Shutdown::Both)
+            .expect("Could not close socket.");
     }
 }
 
@@ -201,6 +196,8 @@ impl eframe::App for MyApp {
             });
     }
 }
+
+static STOP: AtomicBool = AtomicBool::new(false);
 
 fn main() {
     let (width, height): (f32, f32) = (600.0 * 1920.0 / 1080.0, 600.0);
