@@ -3,7 +3,7 @@ use eframe::egui::{Context, Pos2, Ui};
 use eframe::{egui, NativeOptions};
 use modifiers_state::ModifiersState;
 use remote_desktop::egui_key_to_vk;
-use remote_desktop::protocol::Message;
+use remote_desktop::protocol::{Message, MessageType};
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -40,19 +40,30 @@ fn start_ffmpeg() -> Child {
     ffmpeg
 }
 
-fn thread_receive_encoded(mut socket: TcpStream, mut stdin: ChildStdin) {
+fn thread_receive_encoded(
+    mut socket: TcpStream,
+    mut stdin: ChildStdin,
+    stop_flag: Arc<AtomicBool>,
+) {
     thread::spawn(move || {
-        while !STOP.load(Ordering::Relaxed) {
-            let message = Message::receive(&mut socket).unwrap();
-            stdin.write_all(&message.screen_data).unwrap();
+        while !stop_flag.load(Ordering::Relaxed) {
+            if let Some(message) = Message::receive(&mut socket) {
+                if message.message_type == MessageType::Screen {
+                    stdin.write_all(&message.screen_data).unwrap();
+                }
+            }
         }
     });
 }
 
-fn thread_read_decoded(frame_queue: Arc<Mutex<VecDeque<Vec<u8>>>>, mut stdout: ChildStdout) {
+fn thread_read_decoded(
+    frame_queue: Arc<Mutex<VecDeque<Vec<u8>>>>,
+    mut stdout: ChildStdout,
+    stop_flag: Arc<AtomicBool>,
+) {
     thread::spawn(move || {
         let mut rgba_buffer = vec![0u8; 1920 * 1080 * 4];
-        while !STOP.load(Ordering::Relaxed) {
+        while !stop_flag.load(Ordering::Relaxed) {
             stdout.read_exact(&mut rgba_buffer).unwrap();
 
             let mut queue = frame_queue.lock().unwrap();
@@ -70,6 +81,7 @@ struct MyApp {
     dt: f32,
     elapsed_time: f32,
     frame_queue: Arc<Mutex<VecDeque<Vec<u8>>>>,
+    stop_flag: Arc<AtomicBool>,
     socket: TcpStream,
     current_frame: Vec<u8>,
     width: f32,
@@ -88,14 +100,17 @@ impl MyApp {
         let frame_queue = Arc::new(Mutex::new(VecDeque::new()));
         let frame_queue_clone = frame_queue.clone();
 
-        thread_receive_encoded(socket.try_clone().unwrap(), stdin);
-        thread_read_decoded(frame_queue_clone, stdout);
+        let stop_flag = Arc::new(AtomicBool::new(false));
+
+        thread_receive_encoded(socket.try_clone().unwrap(), stdin, stop_flag.clone());
+        thread_read_decoded(frame_queue_clone, stdout, stop_flag.clone());
 
         Self {
             now: Instant::now(),
             dt: 0.,
             elapsed_time: 0.,
             frame_queue,
+            stop_flag,
             socket,
             current_frame: vec![0u8; 1920 * 1080 * 4],
             width,
@@ -120,6 +135,55 @@ impl MyApp {
         (x as i32, y as i32)
     }
 
+    fn handle_input(&mut self, input: &egui::InputState) {
+        self.modifiers_state.update(input);
+
+        for key in &self.modifiers_state.keys {
+            let message = Message::new_keyboard(key.key, key.pressed);
+            message.send(&mut self.socket).unwrap();
+        }
+
+        for event in &input.events {
+            match event {
+                egui::Event::PointerButton {
+                    pos,
+                    button,
+                    pressed,
+                    ..
+                } => {
+                    let mouse_position = self.normalize_mouse_position(*pos);
+                    let message = Message::new_mouse_click(*button, mouse_position, *pressed);
+                    message.send(&mut self.socket).unwrap();
+                }
+
+                egui::Event::Key {
+                    physical_key,
+                    pressed,
+                    ..
+                } => {
+                    if let Some(key) = physical_key {
+                        let vk = egui_key_to_vk(key).unwrap();
+                        let message = Message::new_keyboard(vk, *pressed);
+                        message.send(&mut self.socket).unwrap();
+                    }
+                }
+
+                egui::Event::PointerMoved(new_pos) => {
+                    let mouse_position = self.normalize_mouse_position(*new_pos);
+                    let message = Message::new_mouse_move(mouse_position);
+                    message.send(&mut self.socket).unwrap();
+                }
+
+                egui::Event::MouseWheel { delta, .. } => {
+                    let message = Message::new_scroll(delta.y.signum());
+                    message.send(&mut self.socket).unwrap();
+                }
+
+                _ => (),
+            }
+        }
+    }
+
     fn render(&mut self, ui: &mut Ui, ctx: &Context) {
         if self.elapsed_time > 1. / 30. {
             self.elapsed_time = 0.;
@@ -133,53 +197,7 @@ impl MyApp {
         let sized_texture = SizedTexture::new(&handle, ui.available_size());
         ui.image(sized_texture);
 
-        ui.input(|input| {
-            self.modifiers_state.update(input);
-
-            for key in &self.modifiers_state.keys {
-                let message = Message::new_keyboard(key.key, key.pressed);
-                message.send(&mut self.socket).unwrap();
-            }
-
-            for event in &input.events {
-                match event {
-                    egui::Event::PointerButton {
-                        pos,
-                        button,
-                        pressed,
-                        ..
-                    } => {
-                        let mouse_position = self.normalize_mouse_position(*pos);
-                        let message = Message::new_mouse_click(*button, mouse_position, *pressed);
-                        message.send(&mut self.socket).unwrap();
-                    }
-
-                    egui::Event::Key {
-                        physical_key,
-                        pressed,
-                        ..
-                    } => {
-                        if let Some(key) = physical_key {
-                            let vk = egui_key_to_vk(key).unwrap();
-                            let message = Message::new_keyboard(vk, *pressed);
-                            message.send(&mut self.socket).unwrap();
-                        }
-                    }
-
-                    egui::Event::PointerMoved(new_pos) => {
-                        let mouse_position = self.normalize_mouse_position(*new_pos);
-                        let message = Message::new_mouse_move(mouse_position);
-                        message.send(&mut self.socket).unwrap();
-                    }
-
-                    egui::Event::MouseWheel { delta, .. } => {
-                        let message = Message::new_scroll(delta.y.signum());
-                        message.send(&mut self.socket).unwrap();
-                    }
-                    _ => (),
-                }
-            }
-        });
+        ui.input(|input| self.handle_input(input));
 
         ctx.request_repaint();
     }
@@ -187,7 +205,7 @@ impl MyApp {
 
 impl Drop for MyApp {
     fn drop(&mut self) {
-        STOP.store(true, Ordering::Relaxed);
+        self.stop_flag.store(true, Ordering::Relaxed);
         let message = Message::new_shutdown();
         message.send(&mut self.socket).unwrap();
 
@@ -213,8 +231,6 @@ impl eframe::App for MyApp {
             });
     }
 }
-
-static STOP: AtomicBool = AtomicBool::new(false);
 
 fn main() {
     let (width, height): (f32, f32) = (600.0 * 1920.0 / 1080.0, 600.0);

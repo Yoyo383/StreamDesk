@@ -4,7 +4,10 @@ use std::{
     io::Read,
     net::{TcpListener, TcpStream},
     process::{Child, ChildStdout, Command, Stdio},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     thread,
 };
 use winapi::um::winuser::{
@@ -44,10 +47,10 @@ fn start_ffmpeg() -> Child {
     ffmpeg
 }
 
-fn thread_read_encoded(mut socket: TcpStream, mut stdout: ChildStdout) {
+fn thread_read_encoded(mut socket: TcpStream, mut stdout: ChildStdout, stop_flag: Arc<AtomicBool>) {
     thread::spawn(move || {
         let mut buffer = [0u8; 4096];
-        while !STOP.load(Ordering::Relaxed) {
+        while !stop_flag.load(Ordering::Relaxed) {
             match stdout.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(n) => {
@@ -176,16 +179,18 @@ fn handle_connection(mut socket: TcpStream) {
     let mut command = start_ffmpeg();
     let stdout = command.stdout.take().unwrap();
 
-    thread_read_encoded(socket.try_clone().unwrap(), stdout);
+    let stop_flag = Arc::new(AtomicBool::new(false));
 
-    loop {
+    thread_read_encoded(socket.try_clone().unwrap(), stdout, stop_flag.clone());
+
+    while !stop_flag.load(Ordering::Relaxed) {
         let message = Message::receive(&mut socket).unwrap();
 
         // println!("{:?}", message);
 
         match message.message_type {
             MessageType::Shutdown => {
-                STOP.store(true, Ordering::Relaxed);
+                stop_flag.store(true, Ordering::Relaxed);
                 socket
                     .shutdown(std::net::Shutdown::Both)
                     .expect("Could not close socket.");
@@ -215,8 +220,6 @@ fn handle_connection(mut socket: TcpStream) {
         }
     }
 }
-
-static STOP: AtomicBool = AtomicBool::new(false);
 
 fn main() {
     let listener = TcpListener::bind("0.0.0.0:7643").expect("Could not bind listener");
