@@ -7,7 +7,9 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
     thread,
 };
-use winapi::um::winuser::{self, SendInput, INPUT, INPUT_MOUSE, MOUSEINPUT, WHEEL_DELTA};
+use winapi::um::winuser::{
+    self, SendInput, INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, MOUSEINPUT, WHEEL_DELTA,
+};
 
 fn start_ffmpeg() -> Child {
     let ffmpeg = Command::new("ffmpeg")
@@ -149,6 +151,27 @@ fn send_scroll(delta: i32) {
     }
 }
 
+fn send_key(key: u16, pressed: bool) {
+    unsafe {
+        let mut key_input: INPUT = std::mem::zeroed();
+        key_input.type_ = INPUT_KEYBOARD;
+        *key_input.u.ki_mut() = KEYBDINPUT {
+            wVk: key,
+            wScan: 0,
+            dwFlags: if pressed { 0 } else { winuser::KEYEVENTF_KEYUP },
+            time: 0,
+            dwExtraInfo: 0,
+        };
+
+        let mut inputs = [key_input];
+        SendInput(
+            inputs.len() as u32,
+            inputs.as_mut_ptr(),
+            std::mem::size_of::<INPUT>() as i32,
+        );
+    }
+}
+
 fn handle_connection(mut socket: TcpStream) {
     let mut command = start_ffmpeg();
     let stdout = command.stdout.take().unwrap();
@@ -182,6 +205,10 @@ fn handle_connection(mut socket: TcpStream) {
 
             MessageType::Scroll => {
                 send_scroll(message.mouse_position.1);
+            }
+
+            MessageType::Keyboard => {
+                send_key(message.key, message.pressed);
             }
 
             _ => (),
