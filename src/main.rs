@@ -150,7 +150,7 @@ impl MyApp {
                         ..
                     } => {
                         let mouse_position = self.normalize_mouse_position(*pos);
-                        let message = Message::new_mouse(*button, mouse_position, *pressed);
+                        let message = Message::new_mouse_click(*button, mouse_position, *pressed);
                         message.send(&mut self.socket).unwrap();
                     }
 
@@ -160,11 +160,16 @@ impl MyApp {
                         ..
                     } => {
                         if let Some(key) = physical_key {
-                            println!("{:?} {}", key, pressed);
                             let vk = egui_key_to_vk(key).unwrap();
                             let message = Message::new_keyboard(vk, *pressed);
                             message.send(&mut self.socket).unwrap();
                         }
+                    }
+
+                    egui::Event::PointerMoved(new_pos) => {
+                        let mouse_position = self.normalize_mouse_position(*new_pos);
+                        let message = Message::new_mouse_move(mouse_position);
+                        message.send(&mut self.socket).unwrap();
                     }
 
                     _ => (),

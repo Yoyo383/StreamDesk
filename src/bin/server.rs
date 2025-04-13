@@ -61,6 +61,30 @@ fn thread_read_encoded(mut socket: TcpStream, mut stdout: ChildStdout) {
     });
 }
 
+fn send_mouse_move(mouse_position: (i32, i32)) {
+    unsafe {
+        let flags: u32 = winuser::MOUSEEVENTF_ABSOLUTE | winuser::MOUSEEVENTF_MOVE;
+
+        let mut move_input: INPUT = std::mem::zeroed();
+        move_input.type_ = INPUT_MOUSE;
+        *move_input.u.mi_mut() = MOUSEINPUT {
+            dx: mouse_position.0,
+            dy: mouse_position.1,
+            mouseData: 0,
+            dwFlags: flags,
+            time: 0,
+            dwExtraInfo: 0,
+        };
+
+        let mut inputs = [move_input];
+        SendInput(
+            inputs.len() as u32,
+            inputs.as_mut_ptr(),
+            std::mem::size_of::<INPUT>() as i32,
+        );
+    }
+}
+
 fn send_mouse_click(mouse_position: (i32, i32), button: PointerButton) {
     unsafe {
         // Currently also moves the cursor, will be changed in the future so that
@@ -74,18 +98,16 @@ fn send_mouse_click(mouse_position: (i32, i32), button: PointerButton) {
             flags |= winuser::MOUSEEVENTF_MIDDLEDOWN | winuser::MOUSEEVENTF_MIDDLEUP;
         }
 
-        let click_up_input = INPUT {
-            type_: INPUT_MOUSE,
-            u: {
-                let mut mi = std::mem::zeroed::<MOUSEINPUT>();
-                mi.dx = mouse_position.0;
-                mi.dy = mouse_position.1;
-                mi.mouseData = 0;
-                mi.dwFlags = flags;
-                mi.time = 0;
-                mi.dwExtraInfo = 0;
-                std::mem::transmute(mi)
-            },
+        let mut click_up_input: INPUT = std::mem::zeroed();
+
+        click_up_input.type_ = INPUT_MOUSE;
+        *click_up_input.u.mi_mut() = MOUSEINPUT {
+            dx: mouse_position.0,
+            dy: mouse_position.1,
+            mouseData: 0,
+            dwFlags: flags,
+            time: 0,
+            dwExtraInfo: 0,
         };
 
         let mut inputs = [click_up_input];
@@ -108,18 +130,24 @@ fn handle_connection(mut socket: TcpStream) {
 
         println!("{:?}", message);
 
-        if message.message_type == MessageType::Shutdown {
-            STOP.store(true, Ordering::Relaxed);
-            socket
-                .shutdown(std::net::Shutdown::Both)
-                .expect("Could not close socket.");
-            break;
-        }
-
-        if message.message_type == MessageType::Mouse {
-            if !message.pressed {
-                send_mouse_click(message.mouse_position, message.mouse_button);
+        match message.message_type {
+            MessageType::Shutdown => {
+                STOP.store(true, Ordering::Relaxed);
+                socket
+                    .shutdown(std::net::Shutdown::Both)
+                    .expect("Could not close socket.");
             }
+
+            MessageType::MouseClick => {
+                if !message.pressed {
+                    send_mouse_click(message.mouse_position, message.mouse_button);
+                }
+            }
+
+            MessageType::MouseMove => {
+                send_mouse_move(message.mouse_position);
+            }
+            _ => (),
         }
     }
 }

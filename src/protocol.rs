@@ -9,7 +9,8 @@ use eframe::egui::PointerButton;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageType {
     None,
-    Mouse,
+    MouseClick,
+    MouseMove,
     Keyboard,
     Screen,
     Shutdown,
@@ -40,34 +41,24 @@ impl Default for Message {
 }
 
 impl Message {
-    pub fn new(
-        message_type: MessageType,
+    pub fn new_mouse_click(
         mouse_button: PointerButton,
         mouse_position: (i32, i32),
-        key: u16,
         pressed: bool,
-        screen_data: Vec<u8>,
     ) -> Self {
         Self {
-            message_type,
+            message_type: MessageType::MouseClick,
             mouse_button,
             mouse_position,
-            key,
             pressed,
-            screen_data,
+            ..Default::default()
         }
     }
 
-    pub fn new_mouse(
-        mouse_button: PointerButton,
-        mouse_position: (i32, i32),
-        pressed: bool,
-    ) -> Self {
+    pub fn new_mouse_move(mouse_position: (i32, i32)) -> Self {
         Self {
-            message_type: MessageType::Mouse,
-            mouse_button,
+            message_type: MessageType::MouseMove,
             mouse_position,
-            pressed,
             ..Default::default()
         }
     }
@@ -134,10 +125,11 @@ impl Message {
     fn from_bytes(bytes: Vec<u8>) -> Option<Self> {
         let message_type = match bytes[0] {
             0 => Some(MessageType::None),
-            1 => Some(MessageType::Mouse),
-            2 => Some(MessageType::Keyboard),
-            3 => Some(MessageType::Screen),
-            4 => Some(MessageType::Shutdown),
+            1 => Some(MessageType::MouseClick),
+            2 => Some(MessageType::MouseMove),
+            3 => Some(MessageType::Keyboard),
+            4 => Some(MessageType::Screen),
+            5 => Some(MessageType::Shutdown),
             _ => None,
         }?;
         let mouse_button = match bytes[1] {
