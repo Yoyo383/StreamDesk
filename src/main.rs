@@ -172,6 +172,10 @@ impl MyApp {
                         message.send(&mut self.socket).unwrap();
                     }
 
+                    egui::Event::MouseWheel { delta, .. } => {
+                        let message = Message::new_scroll(delta.y.signum());
+                        message.send(&mut self.socket).unwrap();
+                    }
                     _ => (),
                 }
             }

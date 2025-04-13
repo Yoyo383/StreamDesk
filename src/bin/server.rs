@@ -7,7 +7,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
     thread,
 };
-use winapi::um::winuser::{self, SendInput, INPUT, INPUT_MOUSE, MOUSEINPUT};
+use winapi::um::winuser::{self, SendInput, INPUT, INPUT_MOUSE, MOUSEINPUT, WHEEL_DELTA};
 
 fn start_ffmpeg() -> Child {
     let ffmpeg = Command::new("ffmpeg")
@@ -63,15 +63,13 @@ fn thread_read_encoded(mut socket: TcpStream, mut stdout: ChildStdout) {
 
 fn send_mouse_move(mouse_position: (i32, i32)) {
     unsafe {
-        let flags: u32 = winuser::MOUSEEVENTF_ABSOLUTE | winuser::MOUSEEVENTF_MOVE;
-
         let mut move_input: INPUT = std::mem::zeroed();
         move_input.type_ = INPUT_MOUSE;
         *move_input.u.mi_mut() = MOUSEINPUT {
             dx: mouse_position.0,
             dy: mouse_position.1,
             mouseData: 0,
-            dwFlags: flags,
+            dwFlags: winuser::MOUSEEVENTF_ABSOLUTE | winuser::MOUSEEVENTF_MOVE,
             time: 0,
             dwExtraInfo: 0,
         };
@@ -129,6 +127,28 @@ fn send_mouse_click(mouse_position: (i32, i32), button: PointerButton, pressed: 
     }
 }
 
+fn send_scroll(delta: i32) {
+    unsafe {
+        let mut scroll_input: INPUT = std::mem::zeroed();
+        scroll_input.type_ = INPUT_MOUSE;
+        *scroll_input.u.mi_mut() = MOUSEINPUT {
+            dx: 0,
+            dy: 0,
+            mouseData: (delta * WHEEL_DELTA as i32) as u32,
+            dwFlags: winuser::MOUSEEVENTF_WHEEL,
+            time: 0,
+            dwExtraInfo: 0,
+        };
+
+        let mut inputs = [scroll_input];
+        SendInput(
+            inputs.len() as u32,
+            inputs.as_mut_ptr(),
+            std::mem::size_of::<INPUT>() as i32,
+        );
+    }
+}
+
 fn handle_connection(mut socket: TcpStream) {
     let mut command = start_ffmpeg();
     let stdout = command.stdout.take().unwrap();
@@ -159,6 +179,11 @@ fn handle_connection(mut socket: TcpStream) {
             MessageType::MouseMove => {
                 send_mouse_move(message.mouse_position);
             }
+
+            MessageType::Scroll => {
+                send_scroll(message.mouse_position.1);
+            }
+
             _ => (),
         }
     }

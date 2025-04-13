@@ -11,6 +11,7 @@ pub enum MessageType {
     None,
     MouseClick,
     MouseMove,
+    Scroll,
     Keyboard,
     Screen,
     Shutdown,
@@ -59,6 +60,14 @@ impl Message {
         Self {
             message_type: MessageType::MouseMove,
             mouse_position,
+            ..Default::default()
+        }
+    }
+
+    pub fn new_scroll(delta: f32) -> Self {
+        Self {
+            message_type: MessageType::Scroll,
+            mouse_position: (0, delta as i32),
             ..Default::default()
         }
     }
@@ -127,9 +136,10 @@ impl Message {
             0 => Some(MessageType::None),
             1 => Some(MessageType::MouseClick),
             2 => Some(MessageType::MouseMove),
-            3 => Some(MessageType::Keyboard),
-            4 => Some(MessageType::Screen),
-            5 => Some(MessageType::Shutdown),
+            3 => Some(MessageType::Scroll),
+            4 => Some(MessageType::Keyboard),
+            5 => Some(MessageType::Screen),
+            6 => Some(MessageType::Shutdown),
             _ => None,
         }?;
         let mouse_button = match bytes[1] {
