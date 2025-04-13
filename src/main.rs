@@ -1,7 +1,9 @@
 use eframe::egui::load::SizedTexture;
-use eframe::egui::{Context, PointerButton, Pos2, Ui};
+use eframe::egui::{Context, Pos2, Ui};
 use eframe::{egui, NativeOptions};
-use remote_desktop::protocol::{Message, MessageType};
+use modifiers_state::ModifiersState;
+use remote_desktop::egui_key_to_vk;
+use remote_desktop::protocol::Message;
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -10,6 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
+mod modifiers_state;
 
 fn start_ffmpeg() -> Child {
     let ffmpeg = Command::new("ffmpeg")
@@ -40,14 +43,8 @@ fn start_ffmpeg() -> Child {
 fn thread_receive_encoded(mut socket: TcpStream, mut stdin: ChildStdin) {
     thread::spawn(move || {
         while !STOP.load(Ordering::Relaxed) {
-            let mut len_buffer = [0u8; 8];
-            socket.read_exact(&mut len_buffer).unwrap();
-            let len = u64::from_be_bytes(len_buffer);
-
-            let mut packet = vec![0u8; len as usize];
-            socket.read_exact(&mut packet).unwrap();
-
-            stdin.write_all(&packet).unwrap();
+            let message = Message::receive(&mut socket).unwrap();
+            stdin.write_all(&message.screen_data).unwrap();
         }
     });
 }
@@ -77,6 +74,7 @@ struct MyApp {
     current_frame: Vec<u8>,
     width: f32,
     height: f32,
+    modifiers_state: ModifiersState,
 }
 
 impl MyApp {
@@ -102,6 +100,7 @@ impl MyApp {
             current_frame: vec![0u8; 1920 * 1080 * 4],
             width,
             height,
+            modifiers_state: ModifiersState::new(),
         }
     }
 
@@ -135,6 +134,13 @@ impl MyApp {
         ui.image(sized_texture);
 
         ui.input(|input| {
+            self.modifiers_state.update(input);
+
+            for key in &self.modifiers_state.keys {
+                let message = Message::new_keyboard(key.key, key.pressed);
+                message.send(&mut self.socket).unwrap();
+            }
+
             for event in &input.events {
                 match event {
                     egui::Event::PointerButton {
@@ -144,12 +150,23 @@ impl MyApp {
                         ..
                     } => {
                         let mouse_position = self.normalize_mouse_position(*pos);
-                        let message =
-                            Message::new(MessageType::Mouse, *button, mouse_position, 0, *pressed);
-                        let bytes = message.to_bytes();
-
-                        self.socket.write_all(&bytes).unwrap();
+                        let message = Message::new_mouse(*button, mouse_position, *pressed);
+                        message.send(&mut self.socket).unwrap();
                     }
+
+                    egui::Event::Key {
+                        physical_key,
+                        pressed,
+                        ..
+                    } => {
+                        if let Some(key) = physical_key {
+                            println!("{:?} {}", key, pressed);
+                            let vk = egui_key_to_vk(key).unwrap();
+                            let message = Message::new_keyboard(vk, *pressed);
+                            message.send(&mut self.socket).unwrap();
+                        }
+                    }
+
                     _ => (),
                 }
             }
@@ -162,14 +179,8 @@ impl MyApp {
 impl Drop for MyApp {
     fn drop(&mut self) {
         STOP.store(true, Ordering::Relaxed);
-        let message = Message::new(
-            MessageType::Shutdown,
-            PointerButton::Primary,
-            (0, 0),
-            0,
-            false,
-        );
-        self.socket.write_all(&message.to_bytes()).unwrap();
+        let message = Message::new_shutdown();
+        message.send(&mut self.socket).unwrap();
 
         self.socket
             .shutdown(std::net::Shutdown::Both)

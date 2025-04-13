@@ -5,5 +5,9 @@ edition = "2021"
 
 [dependencies]
 eframe = "0.31.1"
-xcap = "0.4.1"
 winapi = "0.3.9"
+
+[patch.crates-io]
+egui = { git = "https://github.com/Yoyo383/egui", branch = "master" }
+egui-winit = { git = "https://github.com/Yoyo383/egui", branch = "master", package = "egui-winit" }
+eframe = { git = "https://github.com/Yoyo383/egui", branch = "master", package = "eframe" }

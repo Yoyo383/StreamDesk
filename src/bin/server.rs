@@ -1,12 +1,11 @@
 use eframe::egui::PointerButton;
 use remote_desktop::protocol::{Message, MessageType};
 use std::{
-    io::{Read, Write},
+    io::Read,
     net::{TcpListener, TcpStream},
     process::{Child, ChildStdout, Command, Stdio},
     sync::atomic::{AtomicBool, Ordering},
     thread,
-    time::Instant,
 };
 use winapi::um::winuser::{self, SendInput, INPUT, INPUT_MOUSE, MOUSEINPUT};
 
@@ -50,8 +49,8 @@ fn thread_read_encoded(mut socket: TcpStream, mut stdout: ChildStdout) {
             match stdout.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(n) => {
-                    socket.write_all(&(n as u64).to_be_bytes()).unwrap();
-                    socket.write_all(&buffer[..n]).unwrap();
+                    let message = Message::new_screen(buffer[..n].to_vec());
+                    message.send(&mut socket).unwrap();
                 }
                 Err(e) => {
                     eprintln!("ffmpeg read error: {}", e);
@@ -102,20 +101,11 @@ fn handle_connection(mut socket: TcpStream) {
     let mut command = start_ffmpeg();
     let stdout = command.stdout.take().unwrap();
 
-    let mut now = Instant::now();
-
     thread_read_encoded(socket.try_clone().unwrap(), stdout);
 
-    let mut buffer = vec![0u8; Message::size()];
-
     loop {
-        let new_now = Instant::now();
-        let dt = new_now.duration_since(now).as_secs_f32();
-        now = new_now;
+        let message = Message::receive(&mut socket).unwrap();
 
-        socket.read_exact(&mut buffer).unwrap();
-
-        let message = Message::from_bytes(&buffer).unwrap();
         println!("{:?}", message);
 
         if message.message_type == MessageType::Shutdown {
