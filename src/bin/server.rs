@@ -85,17 +85,27 @@ fn send_mouse_move(mouse_position: (i32, i32)) {
     }
 }
 
-fn send_mouse_click(mouse_position: (i32, i32), button: PointerButton) {
+fn send_mouse_click(mouse_position: (i32, i32), button: PointerButton, pressed: bool) {
     unsafe {
-        // Currently also moves the cursor, will be changed in the future so that
-        // the cursor always moved to the right location
         let mut flags: u32 = winuser::MOUSEEVENTF_ABSOLUTE | winuser::MOUSEEVENTF_MOVE;
         if button == PointerButton::Primary {
-            flags |= winuser::MOUSEEVENTF_LEFTDOWN | winuser::MOUSEEVENTF_LEFTUP;
+            if pressed {
+                flags |= winuser::MOUSEEVENTF_LEFTDOWN;
+            } else {
+                flags |= winuser::MOUSEEVENTF_LEFTUP;
+            }
         } else if button == PointerButton::Secondary {
-            flags |= winuser::MOUSEEVENTF_RIGHTDOWN | winuser::MOUSEEVENTF_RIGHTUP;
+            if pressed {
+                flags |= winuser::MOUSEEVENTF_RIGHTDOWN;
+            } else {
+                flags |= winuser::MOUSEEVENTF_RIGHTUP;
+            }
         } else if button == PointerButton::Middle {
-            flags |= winuser::MOUSEEVENTF_MIDDLEDOWN | winuser::MOUSEEVENTF_MIDDLEUP;
+            if pressed {
+                flags |= winuser::MOUSEEVENTF_MIDDLEDOWN;
+            } else {
+                flags |= winuser::MOUSEEVENTF_MIDDLEUP;
+            }
         }
 
         let mut click_up_input: INPUT = std::mem::zeroed();
@@ -128,7 +138,7 @@ fn handle_connection(mut socket: TcpStream) {
     loop {
         let message = Message::receive(&mut socket).unwrap();
 
-        println!("{:?}", message);
+        // println!("{:?}", message);
 
         match message.message_type {
             MessageType::Shutdown => {
@@ -139,9 +149,11 @@ fn handle_connection(mut socket: TcpStream) {
             }
 
             MessageType::MouseClick => {
-                if !message.pressed {
-                    send_mouse_click(message.mouse_position, message.mouse_button);
-                }
+                send_mouse_click(
+                    message.mouse_position,
+                    message.mouse_button,
+                    message.pressed,
+                );
             }
 
             MessageType::MouseMove => {
