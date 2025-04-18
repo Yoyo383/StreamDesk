@@ -1,4 +1,6 @@
-use eframe::egui::Key;
+use std::net::TcpStream;
+
+use eframe::egui::{self, Key, Pos2};
 
 pub mod protocol;
 
@@ -92,4 +94,26 @@ pub fn egui_key_to_vk(key: &Key) -> Option<u16> {
         Backtick => VK_OEM_3 as u16,
         _ => return None,
     })
+}
+
+pub fn normalize_mouse_position(mouse_position: Pos2, width: f32, height: f32) -> (i32, i32) {
+    let x = (mouse_position.x / width) * 65535.0;
+    let y = (mouse_position.y / height) * 65535.0;
+    (x as i32, y as i32)
+}
+
+pub struct AppData {
+    pub socket: Option<TcpStream>,
+    pub width: f32,
+    pub height: f32,
+}
+
+pub enum SceneChange {
+    To(Box<dyn Scene>),
+    Quit,
+}
+
+pub trait Scene {
+    fn update(&mut self, ctx: &egui::Context, app_data: &mut AppData) -> Option<SceneChange>;
+    fn on_exit(&mut self, app_data: &mut AppData);
 }

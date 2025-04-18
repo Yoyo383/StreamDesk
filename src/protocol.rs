@@ -15,6 +15,9 @@ pub enum MessageType {
     Keyboard,
     Screen,
     Shutdown,
+    Hosting,
+    Joining,
+    MergeUnready,
 }
 
 #[derive(Debug)]
@@ -25,6 +28,7 @@ pub struct Message {
     pub mouse_position: (i32, i32),
     pub key: u16,
     pub pressed: bool,
+    pub general_data: i32,
     pub screen_data: Vec<u8>,
 }
 
@@ -36,6 +40,7 @@ impl Default for Message {
             mouse_position: Default::default(),
             key: Default::default(),
             pressed: Default::default(),
+            general_data: Default::default(),
             screen_data: Default::default(),
         }
     }
@@ -67,7 +72,7 @@ impl Message {
     pub fn new_scroll(delta: f32) -> Self {
         Self {
             message_type: MessageType::Scroll,
-            mouse_position: (0, delta as i32),
+            general_data: delta as i32,
             ..Default::default()
         }
     }
@@ -92,6 +97,28 @@ impl Message {
     pub fn new_shutdown() -> Self {
         Self {
             message_type: MessageType::Shutdown,
+            ..Default::default()
+        }
+    }
+
+    pub fn new_hosting() -> Self {
+        Self {
+            message_type: MessageType::Hosting,
+            ..Default::default()
+        }
+    }
+
+    pub fn new_joining(session_code: i32) -> Self {
+        Self {
+            message_type: MessageType::Joining,
+            general_data: session_code,
+            ..Default::default()
+        }
+    }
+
+    pub fn new_merge_unready() -> Self {
+        Self {
+            message_type: MessageType::MergeUnready,
             ..Default::default()
         }
     }
@@ -127,6 +154,7 @@ impl Message {
         bytes.extend_from_slice(&self.mouse_position.1.to_be_bytes());
         bytes.extend_from_slice(&self.key.to_be_bytes());
         bytes.push(self.pressed as u8);
+        bytes.extend_from_slice(&self.general_data.to_be_bytes());
         bytes.extend_from_slice(&self.screen_data);
         bytes
     }
@@ -140,6 +168,9 @@ impl Message {
             4 => Some(MessageType::Keyboard),
             5 => Some(MessageType::Screen),
             6 => Some(MessageType::Shutdown),
+            7 => Some(MessageType::Hosting),
+            8 => Some(MessageType::Joining),
+            9 => Some(MessageType::MergeUnready),
             _ => None,
         }?;
         let mouse_button = match bytes[1] {
@@ -154,14 +185,16 @@ impl Message {
         );
         let key = u16::from_be_bytes([bytes[10], bytes[11]]);
         let pressed = bytes[12] != 0;
+        let general_data = i32::from_be_bytes([bytes[13], bytes[14], bytes[15], bytes[16]]);
 
-        let screen_data = &bytes[13..];
+        let screen_data = &bytes[17..];
         Some(Self {
             message_type,
             mouse_button,
             mouse_position,
             key,
             pressed,
+            general_data,
             screen_data: screen_data.to_vec(),
         })
     }

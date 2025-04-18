@@ -1,230 +1,146 @@
-use eframe::egui::PointerButton;
+use rand::Rng;
 use remote_desktop::protocol::{Message, MessageType};
 use std::{
-    io::Read,
+    collections::HashMap,
     net::{TcpListener, TcpStream},
-    process::{Child, ChildStdout, Command, Stdio},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
+    sync::{Arc, Mutex},
     thread,
 };
-use winapi::um::winuser::{
-    self, SendInput, INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, MOUSEINPUT, WHEEL_DELTA,
-};
 
-fn start_ffmpeg() -> Child {
-    let ffmpeg = Command::new("ffmpeg")
-        .args(&[
-            "-f",
-            "gdigrab",
-            "-framerate",
-            "30",
-            "-draw_mouse",
-            "0",
-            "-i",
-            "desktop",
-            "-vcodec",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-tune",
-            "zerolatency",
-            "-x264opts",
-            "no-scenecut",
-            "-sc_threshold",
-            "0",
-            "-f",
-            "h264",
-            "-",
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("Failed to start FFmpeg");
-
-    ffmpeg
+#[derive(PartialEq, Eq, Debug)]
+enum ClientType {
+    None,
+    Host,
+    Participant,
 }
 
-fn thread_read_encoded(mut socket: TcpStream, mut stdout: ChildStdout, stop_flag: Arc<AtomicBool>) {
-    thread::spawn(move || {
-        let mut buffer = [0u8; 4096];
-        while !stop_flag.load(Ordering::Relaxed) {
-            match stdout.read(&mut buffer) {
-                Ok(0) => break,
-                Ok(n) => {
-                    let message = Message::new_screen(buffer[..n].to_vec());
-                    message.send(&mut socket).unwrap();
-                }
-                Err(e) => {
-                    eprintln!("ffmpeg read error: {}", e);
-                    break;
-                }
-            }
+struct Session {
+    host: TcpStream,
+    participants: Vec<TcpStream>,
+    unready: Vec<TcpStream>,
+}
+
+impl Session {
+    fn new(host: TcpStream) -> Self {
+        Self {
+            host,
+            participants: Vec::new(),
+            unready: Vec::new(),
         }
-    });
-}
-
-fn send_mouse_move(mouse_position: (i32, i32)) {
-    unsafe {
-        let mut move_input: INPUT = std::mem::zeroed();
-        move_input.type_ = INPUT_MOUSE;
-        *move_input.u.mi_mut() = MOUSEINPUT {
-            dx: mouse_position.0,
-            dy: mouse_position.1,
-            mouseData: 0,
-            dwFlags: winuser::MOUSEEVENTF_ABSOLUTE | winuser::MOUSEEVENTF_MOVE,
-            time: 0,
-            dwExtraInfo: 0,
-        };
-
-        let mut inputs = [move_input];
-        SendInput(
-            inputs.len() as u32,
-            inputs.as_mut_ptr(),
-            std::mem::size_of::<INPUT>() as i32,
-        );
     }
 }
 
-fn send_mouse_click(mouse_position: (i32, i32), button: PointerButton, pressed: bool) {
-    unsafe {
-        let mut flags: u32 = winuser::MOUSEEVENTF_ABSOLUTE | winuser::MOUSEEVENTF_MOVE;
-        if button == PointerButton::Primary {
-            if pressed {
-                flags |= winuser::MOUSEEVENTF_LEFTDOWN;
-            } else {
-                flags |= winuser::MOUSEEVENTF_LEFTUP;
-            }
-        } else if button == PointerButton::Secondary {
-            if pressed {
-                flags |= winuser::MOUSEEVENTF_RIGHTDOWN;
-            } else {
-                flags |= winuser::MOUSEEVENTF_RIGHTUP;
-            }
-        } else if button == PointerButton::Middle {
-            if pressed {
-                flags |= winuser::MOUSEEVENTF_MIDDLEDOWN;
-            } else {
-                flags |= winuser::MOUSEEVENTF_MIDDLEUP;
-            }
+fn generate_session_code(sessions: &HashMap<i32, Session>) -> i32 {
+    let mut rng = rand::rng();
+    loop {
+        let code: i32 = rng.random_range(0..1_000_000); // Generates a 6-digit number
+        println!("{}", code);
+        if !sessions.contains_key(&code) {
+            return code;
         }
-
-        let mut click_up_input: INPUT = std::mem::zeroed();
-
-        click_up_input.type_ = INPUT_MOUSE;
-        *click_up_input.u.mi_mut() = MOUSEINPUT {
-            dx: mouse_position.0,
-            dy: mouse_position.1,
-            mouseData: 0,
-            dwFlags: flags,
-            time: 0,
-            dwExtraInfo: 0,
-        };
-
-        let mut inputs = [click_up_input];
-        SendInput(
-            inputs.len() as u32,
-            inputs.as_mut_ptr(),
-            std::mem::size_of::<INPUT>() as i32,
-        );
     }
 }
 
-fn send_scroll(delta: i32) {
-    unsafe {
-        let mut scroll_input: INPUT = std::mem::zeroed();
-        scroll_input.type_ = INPUT_MOUSE;
-        *scroll_input.u.mi_mut() = MOUSEINPUT {
-            dx: 0,
-            dy: 0,
-            mouseData: (delta * WHEEL_DELTA as i32) as u32,
-            dwFlags: winuser::MOUSEEVENTF_WHEEL,
-            time: 0,
-            dwExtraInfo: 0,
-        };
+fn handle_client(mut socket: TcpStream, sessions: Arc<Mutex<HashMap<i32, Session>>>) {
+    let mut client_type = ClientType::None;
+    let mut session_code: i32 = -1;
 
-        let mut inputs = [scroll_input];
-        SendInput(
-            inputs.len() as u32,
-            inputs.as_mut_ptr(),
-            std::mem::size_of::<INPUT>() as i32,
-        );
-    }
-}
-
-fn send_key(key: u16, pressed: bool) {
-    unsafe {
-        let mut key_input: INPUT = std::mem::zeroed();
-        key_input.type_ = INPUT_KEYBOARD;
-        *key_input.u.ki_mut() = KEYBDINPUT {
-            wVk: key,
-            wScan: 0,
-            dwFlags: if pressed { 0 } else { winuser::KEYEVENTF_KEYUP },
-            time: 0,
-            dwExtraInfo: 0,
-        };
-
-        let mut inputs = [key_input];
-        SendInput(
-            inputs.len() as u32,
-            inputs.as_mut_ptr(),
-            std::mem::size_of::<INPUT>() as i32,
-        );
-    }
-}
-
-fn handle_connection(mut socket: TcpStream) {
-    let mut command = start_ffmpeg();
-    let stdout = command.stdout.take().unwrap();
-
-    let stop_flag = Arc::new(AtomicBool::new(false));
-
-    thread_read_encoded(socket.try_clone().unwrap(), stdout, stop_flag.clone());
-
-    while !stop_flag.load(Ordering::Relaxed) {
+    loop {
         let message = Message::receive(&mut socket).unwrap();
 
-        // println!("{:?}", message);
-
         match message.message_type {
-            MessageType::Shutdown => {
-                stop_flag.store(true, Ordering::Relaxed);
-                socket
-                    .shutdown(std::net::Shutdown::Both)
-                    .expect("Could not close socket.");
+            MessageType::Hosting => {
+                // start new session
+                let mut sessions = sessions.lock().unwrap();
+                session_code = generate_session_code(&sessions);
+                let session = Session::new(socket.try_clone().unwrap());
+                sessions.insert(session_code, session);
+
+                // send back the session code
+                let message = Message::new_joining(session_code);
+                message.send(&mut socket).unwrap();
+                client_type = ClientType::Host;
             }
 
-            MessageType::MouseClick => {
-                send_mouse_click(
-                    message.mouse_position,
-                    message.mouse_button,
-                    message.pressed,
-                );
+            MessageType::Joining => {
+                let mut sessions = sessions.lock().unwrap();
+                session_code = message.general_data;
+
+                // check if the code exists
+                // if code exists, send it back, and if it doesn't exist, send back code -1
+                match sessions.get_mut(&session_code) {
+                    Some(session) => {
+                        session.unready.push(socket.try_clone().unwrap());
+                        client_type = ClientType::Participant;
+
+                        message.send(&mut socket).unwrap();
+                    }
+                    None => {
+                        let message = Message::new_joining(-1);
+                        message.send(&mut socket).unwrap();
+                    }
+                }
             }
 
-            MessageType::MouseMove => {
-                send_mouse_move(message.mouse_position);
+            MessageType::MergeUnready => {
+                if client_type != ClientType::Host {
+                    return;
+                }
+
+                let mut sessions = sessions.lock().unwrap();
+                let session = sessions
+                    .get_mut(&session_code)
+                    .expect("should contain a session");
+
+                session.participants.append(&mut session.unready);
             }
 
-            MessageType::Scroll => {
-                send_scroll(message.mouse_position.1);
-            }
+            _ => match client_type {
+                ClientType::Host => {
+                    // forward the message to all participants
+                    let mut sessions = sessions.lock().unwrap();
+                    let session = sessions
+                        .get_mut(&session_code)
+                        .expect("should contain a session");
 
-            MessageType::Keyboard => {
-                send_key(message.key, message.pressed);
-            }
+                    for participant in &mut session.participants {
+                        message.send(participant).unwrap();
+                    }
+                }
 
-            _ => (),
+                ClientType::Participant => {
+                    // forward the message to the host
+                    let mut sessions = sessions.lock().unwrap();
+                    let session = sessions
+                        .get_mut(&session_code)
+                        .expect("should contain a session");
+
+                    message.send(&mut session.host).unwrap();
+                }
+
+                _ => (),
+            },
         }
     }
 }
 
 fn main() {
     let listener = TcpListener::bind("0.0.0.0:7643").expect("Could not bind listener");
-    match listener.accept() {
-        Ok((socket, _addr)) => handle_connection(socket),
-        Err(e) => println!("Couldn't accept client: {e:?}"),
+
+    let sessions: Arc<Mutex<HashMap<i32, Session>>> = Arc::new(Mutex::new(HashMap::new()));
+
+    for connection in listener.incoming() {
+        match connection {
+            Ok(socket) => {
+                let sessions_clone = sessions.clone();
+                thread::spawn(move || handle_client(socket, sessions_clone));
+            }
+            Err(e) => println!("Couldn't accept client: {e:?}"),
+        }
     }
+
+    // match listener.accept() {
+    //     Ok((socket, _addr)) => handle_connection(socket),
+    //     Err(e) => println!("Couldn't accept client: {e:?}"),
+    // }
 }
