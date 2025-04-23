@@ -18,6 +18,8 @@ pub enum MessageType {
     Hosting,
     Joining,
     MergeUnready,
+    SessionExit,
+    SessionEnd,
 }
 
 #[derive(Debug)]
@@ -29,7 +31,7 @@ pub struct Message {
     pub key: u16,
     pub pressed: bool,
     pub general_data: i32,
-    pub screen_data: Vec<u8>,
+    pub vector_data: Vec<u8>,
 }
 
 impl Default for Message {
@@ -41,7 +43,7 @@ impl Default for Message {
             key: Default::default(),
             pressed: Default::default(),
             general_data: Default::default(),
-            screen_data: Default::default(),
+            vector_data: Default::default(),
         }
     }
 }
@@ -89,7 +91,7 @@ impl Message {
     pub fn new_screen(screen_data: Vec<u8>) -> Self {
         Self {
             message_type: MessageType::Screen,
-            screen_data,
+            vector_data: screen_data,
             ..Default::default()
         }
     }
@@ -101,17 +103,19 @@ impl Message {
         }
     }
 
-    pub fn new_hosting() -> Self {
+    pub fn new_hosting(username: &str) -> Self {
         Self {
             message_type: MessageType::Hosting,
+            vector_data: username.as_bytes().to_vec(),
             ..Default::default()
         }
     }
 
-    pub fn new_joining(session_code: i32) -> Self {
+    pub fn new_joining(session_code: i32, username: &str) -> Self {
         Self {
             message_type: MessageType::Joining,
             general_data: session_code,
+            vector_data: username.as_bytes().to_vec(),
             ..Default::default()
         }
     }
@@ -119,6 +123,21 @@ impl Message {
     pub fn new_merge_unready() -> Self {
         Self {
             message_type: MessageType::MergeUnready,
+            ..Default::default()
+        }
+    }
+
+    pub fn new_session_exit(username: &str) -> Self {
+        Self {
+            message_type: MessageType::SessionExit,
+            vector_data: username.as_bytes().to_vec(),
+            ..Default::default()
+        }
+    }
+
+    pub fn new_session_end() -> Self {
+        Self {
+            message_type: MessageType::SessionEnd,
             ..Default::default()
         }
     }
@@ -134,16 +153,19 @@ impl Message {
         Ok(())
     }
 
-    pub fn receive(socket: &mut TcpStream) -> Option<Self> {
+    pub fn receive(socket: &mut TcpStream) -> std::io::Result<Self> {
         let mut len_buffer = [0u8; 8];
-        socket.read_exact(&mut len_buffer).ok()?;
+        socket.read_exact(&mut len_buffer)?;
         let len = u64::from_be_bytes(len_buffer) as usize;
 
         let mut bytes = vec![0u8; len];
-        socket.read_exact(&mut bytes).ok()?;
+        socket.read_exact(&mut bytes)?;
 
-        let message = Message::from_bytes(bytes)?;
-        Some(message)
+        let message = Message::from_bytes(bytes).ok_or(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "bytes are incorrect",
+        ));
+        message
     }
 
     fn to_bytes(&self) -> Vec<u8> {
@@ -155,7 +177,7 @@ impl Message {
         bytes.extend_from_slice(&self.key.to_be_bytes());
         bytes.push(self.pressed as u8);
         bytes.extend_from_slice(&self.general_data.to_be_bytes());
-        bytes.extend_from_slice(&self.screen_data);
+        bytes.extend_from_slice(&self.vector_data);
         bytes
     }
 
@@ -171,6 +193,8 @@ impl Message {
             7 => Some(MessageType::Hosting),
             8 => Some(MessageType::Joining),
             9 => Some(MessageType::MergeUnready),
+            10 => Some(MessageType::SessionExit),
+            11 => Some(MessageType::SessionEnd),
             _ => None,
         }?;
         let mouse_button = match bytes[1] {
@@ -187,7 +211,11 @@ impl Message {
         let pressed = bytes[12] != 0;
         let general_data = i32::from_be_bytes([bytes[13], bytes[14], bytes[15], bytes[16]]);
 
-        let screen_data = &bytes[17..];
+        let mut vector_data: Vec<u8> = Vec::new();
+        if bytes.len() >= 18 {
+            vector_data.extend_from_slice(&bytes[17..]);
+        }
+
         Some(Self {
             message_type,
             mouse_button,
@@ -195,7 +223,7 @@ impl Message {
             key,
             pressed,
             general_data,
-            screen_data: screen_data.to_vec(),
+            vector_data,
         })
     }
 }

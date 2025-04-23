@@ -14,13 +14,16 @@ use std::{
     process::{Child, ChildStdout, Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
-    thread,
+    thread::{self, JoinHandle},
+    time::Duration,
 };
 use winapi::um::winuser::{
     self, SendInput, INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, MOUSEINPUT, WHEEL_DELTA,
 };
+
+use crate::menu_scene::MenuScene;
 
 fn start_ffmpeg() -> Child {
     let ffmpeg = Command::new("ffmpeg")
@@ -57,7 +60,11 @@ fn start_ffmpeg() -> Child {
     ffmpeg
 }
 
-fn thread_read_encoded(mut socket: TcpStream, mut stdout: ChildStdout, stop_flag: Arc<AtomicBool>) {
+fn thread_send_screen(
+    mut socket: TcpStream,
+    mut stdout: ChildStdout,
+    stop_flag: Arc<AtomicBool>,
+) -> JoinHandle<()> {
     thread::spawn(move || {
         let mut reader = AnnexBReader::accumulate(|nal: RefNal<'_>| {
             if !nal.is_complete() {
@@ -104,46 +111,65 @@ fn thread_read_encoded(mut socket: TcpStream, mut stdout: ChildStdout, stop_flag
                 }
             }
         }
-    });
+    })
 }
 
-fn input_thread(mut socket: TcpStream, stop_flag: Arc<AtomicBool>) {
-    thread::spawn(move || loop {
-        let message = Message::receive(&mut socket).unwrap();
+fn thread_read_socket(
+    mut socket: TcpStream,
+    stop_flag: Arc<AtomicBool>,
+    usernames: Arc<Mutex<Vec<String>>>,
+) -> JoinHandle<()> {
+    thread::spawn(move || {
+        socket
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
 
-        match message.message_type {
-            MessageType::Shutdown => {
-                stop_flag.store(true, Ordering::Relaxed);
-                socket
-                    .shutdown(std::net::Shutdown::Both)
-                    .expect("Could not close socket.");
+        while !stop_flag.load(Ordering::Relaxed) {
+            let message = Message::receive(&mut socket).unwrap_or_default();
 
-                break;
+            match message.message_type {
+                MessageType::Joining => {
+                    let mut usernames = usernames.lock().unwrap();
+                    usernames.push(
+                        String::from_utf8(message.vector_data).expect("bytes should be utf8"),
+                    );
+                }
+
+                MessageType::SessionExit => {
+                    // remove username from usernames
+                    let mut usernames = usernames.lock().unwrap();
+                    let username =
+                        String::from_utf8(message.vector_data).expect("bytes should be utf8");
+
+                    usernames.retain(|name| *name != username);
+                }
+
+                MessageType::MouseClick => {
+                    send_mouse_click(
+                        message.mouse_position,
+                        message.mouse_button,
+                        message.pressed,
+                    );
+                }
+
+                MessageType::MouseMove => {
+                    send_mouse_move(message.mouse_position);
+                }
+
+                MessageType::Scroll => {
+                    send_scroll(message.general_data);
+                }
+
+                MessageType::Keyboard => {
+                    send_key(message.key, message.pressed);
+                }
+
+                _ => (),
             }
-
-            MessageType::MouseClick => {
-                send_mouse_click(
-                    message.mouse_position,
-                    message.mouse_button,
-                    message.pressed,
-                );
-            }
-
-            MessageType::MouseMove => {
-                send_mouse_move(message.mouse_position);
-            }
-
-            MessageType::Scroll => {
-                send_scroll(message.general_data);
-            }
-
-            MessageType::Keyboard => {
-                send_key(message.key, message.pressed);
-            }
-
-            _ => (),
         }
-    });
+
+        socket.set_read_timeout(None).unwrap();
+    })
 }
 
 fn send_mouse_move(mouse_position: (i32, i32)) {
@@ -258,10 +284,15 @@ fn send_key(key: u16, pressed: bool) {
 pub struct HostScene {
     session_code: i32,
     stop_flag: Arc<AtomicBool>,
+    usernames: Arc<Mutex<Vec<String>>>,
+    username: String,
+    ffmpeg_command: Child,
+    thread_send_screen: Option<JoinHandle<()>>,
+    thread_read_socket: Option<JoinHandle<()>>,
 }
 
 impl HostScene {
-    pub fn new(session_code: i32, app_data: &mut AppData) -> Self {
+    pub fn new(session_code: i32, app_data: &mut AppData, username: String) -> Self {
         let mut command = start_ffmpeg();
         let stdout = command.stdout.take().unwrap();
 
@@ -269,25 +300,75 @@ impl HostScene {
 
         let socket = app_data.socket.as_mut().unwrap();
 
-        thread_read_encoded(socket.try_clone().unwrap(), stdout, stop_flag.clone());
+        let thread_send_screen =
+            thread_send_screen(socket.try_clone().unwrap(), stdout, stop_flag.clone());
 
-        input_thread(socket.try_clone().unwrap(), stop_flag.clone());
+        let usernames = Arc::new(Mutex::new(vec![username.clone()]));
+
+        let thread_read_socket = thread_read_socket(
+            socket.try_clone().unwrap(),
+            stop_flag.clone(),
+            usernames.clone(),
+        );
 
         Self {
             session_code,
             stop_flag,
+            usernames,
+            username,
+            ffmpeg_command: command,
+            thread_send_screen: Some(thread_send_screen),
+            thread_read_socket: Some(thread_read_socket),
         }
+    }
+
+    fn disconnect(&mut self, socket: &mut TcpStream) -> SceneChange {
+        self.stop_flag.store(true, Ordering::Relaxed);
+
+        let _ = self.thread_send_screen.take().unwrap().join();
+        let _ = self.thread_read_socket.take().unwrap().join();
+        let _ = self.ffmpeg_command.kill();
+
+        let message = Message::new_session_exit(&self.username);
+        message.send(socket).unwrap();
+
+        SceneChange::To(Box::new(MenuScene::new(None, true)))
     }
 }
 
 impl Scene for HostScene {
-    fn update(&mut self, ctx: &egui::Context, _app_data: &mut AppData) -> Option<SceneChange> {
+    fn update(&mut self, ctx: &egui::Context, app_data: &mut AppData) -> Option<SceneChange> {
+        let mut result: Option<SceneChange> = None;
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading(format!("Hosting, code {}", self.session_code));
+            ui.separator();
+
+            {
+                let usernames = self.usernames.lock().unwrap();
+                for username in usernames.iter() {
+                    ui.label(username);
+                }
+            }
+
+            if ui.button("End Session").clicked() {
+                result = Some(self.disconnect(app_data.socket.as_mut().unwrap()));
+            }
         });
 
-        None
+        result
     }
 
-    fn on_exit(&mut self, _app_data: &mut remote_desktop::AppData) {}
+    fn on_exit(&mut self, app_data: &mut remote_desktop::AppData) {
+        let socket = app_data.socket.as_mut().unwrap();
+
+        self.disconnect(socket);
+
+        let message = Message::new_shutdown();
+        message.send(socket).unwrap();
+
+        socket
+            .shutdown(std::net::Shutdown::Both)
+            .expect("Could not close socket.");
+    }
 }

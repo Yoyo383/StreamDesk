@@ -3,30 +3,79 @@ use remote_desktop::protocol::{Message, MessageType};
 use std::{
     collections::HashMap,
     net::{TcpListener, TcpStream},
-    sync::{Arc, Mutex},
+    sync::{
+        mpsc::{self, Receiver, Sender},
+        Arc, Mutex,
+    },
     thread,
 };
 
 #[derive(PartialEq, Eq, Debug)]
-enum ClientType {
+enum ConnectionType {
     None,
     Host,
     Participant,
+    Unready,
+}
+
+#[derive(Debug)]
+struct Connection {
+    socket: TcpStream,
+    connection_type: ConnectionType,
+    type_sender: Sender<ConnectionType>,
+    username: String,
 }
 
 struct Session {
-    host: TcpStream,
-    participants: Vec<TcpStream>,
-    unready: Vec<TcpStream>,
+    connections: Vec<Connection>,
 }
 
 impl Session {
-    fn new(host: TcpStream) -> Self {
+    fn new(host: Connection) -> Self {
         Self {
-            host,
-            participants: Vec::new(),
-            unready: Vec::new(),
+            connections: vec![host],
         }
+    }
+
+    fn broadcast_all(&mut self, message: Message) {
+        for connection in &mut self.connections {
+            message.send(&mut connection.socket).unwrap();
+        }
+    }
+
+    fn broadcast_non_host(&mut self, message: Message) {
+        for connection in &mut self.connections {
+            if connection.connection_type != ConnectionType::Host {
+                message.send(&mut connection.socket).unwrap();
+            }
+        }
+    }
+
+    fn broadcast_participants(&mut self, message: Message) {
+        for connection in &mut self.connections {
+            if connection.connection_type == ConnectionType::Participant {
+                message.send(&mut connection.socket).unwrap();
+            }
+        }
+    }
+
+    fn host(&self) -> TcpStream {
+        self.connections
+            .iter()
+            .find(|conn| conn.connection_type == ConnectionType::Host)
+            .unwrap()
+            .socket
+            .try_clone()
+            .unwrap()
+    }
+
+    fn usernames(&self) -> String {
+        self.connections
+            .iter()
+            .map(|conn| &conn.username)
+            .cloned()
+            .collect::<Vec<String>>()
+            .join("\n")
     }
 }
 
@@ -42,24 +91,44 @@ fn generate_session_code(sessions: &HashMap<i32, Session>) -> i32 {
 }
 
 fn handle_client(mut socket: TcpStream, sessions: Arc<Mutex<HashMap<i32, Session>>>) {
-    let mut client_type = ClientType::None;
+    let mut connection_type = ConnectionType::None;
     let mut session_code: i32 = -1;
+    let mut type_receiver: Option<Receiver<ConnectionType>> = None;
 
     loop {
+        if let Some(ref receiver) = type_receiver {
+            if let Ok(new_type) = receiver.try_recv() {
+                connection_type = new_type;
+            }
+        }
         let message = Message::receive(&mut socket).unwrap();
 
         match message.message_type {
             MessageType::Hosting => {
+                let username =
+                    String::from_utf8(message.vector_data).expect("bytes should be utf8");
+
                 // start new session
                 let mut sessions = sessions.lock().unwrap();
                 session_code = generate_session_code(&sessions);
-                let session = Session::new(socket.try_clone().unwrap());
+
+                let (sender, receiver) = mpsc::channel();
+                type_receiver = Some(receiver);
+
+                connection_type = ConnectionType::Host;
+                let host_connection = Connection {
+                    socket: socket.try_clone().unwrap(),
+                    connection_type: ConnectionType::Host,
+                    type_sender: sender,
+                    username: username.clone(),
+                };
+
+                let session = Session::new(host_connection);
                 sessions.insert(session_code, session);
 
                 // send back the session code
-                let message = Message::new_joining(session_code);
+                let message = Message::new_joining(session_code, &username);
                 message.send(&mut socket).unwrap();
-                client_type = ClientType::Host;
             }
 
             MessageType::Joining => {
@@ -70,20 +139,38 @@ fn handle_client(mut socket: TcpStream, sessions: Arc<Mutex<HashMap<i32, Session
                 // if code exists, send it back, and if it doesn't exist, send back code -1
                 match sessions.get_mut(&session_code) {
                     Some(session) => {
-                        session.unready.push(socket.try_clone().unwrap());
-                        client_type = ClientType::Participant;
+                        let username = String::from_utf8(message.vector_data.clone())
+                            .expect("bytes should be utf8");
 
+                        let (sender, receiver) = mpsc::channel();
+                        type_receiver = Some(receiver);
+
+                        // send new username to all participants
+                        session.broadcast_all(message);
+
+                        connection_type = ConnectionType::Unready;
+                        let connection = Connection {
+                            socket: socket.try_clone().unwrap(),
+                            connection_type: ConnectionType::Unready,
+                            type_sender: sender,
+                            username,
+                        };
+                        session.connections.push(connection);
+
+                        // send all usernames
+                        let usernames = session.usernames(); //session.usernames.join("\n");
+                        let message = Message::new_joining(session_code, &usernames);
                         message.send(&mut socket).unwrap();
                     }
                     None => {
-                        let message = Message::new_joining(-1);
+                        let message = Message::new_joining(-1, "");
                         message.send(&mut socket).unwrap();
                     }
                 }
             }
 
             MessageType::MergeUnready => {
-                if client_type != ClientType::Host {
+                if connection_type != ConnectionType::Host {
                     return;
                 }
 
@@ -92,33 +179,83 @@ fn handle_client(mut socket: TcpStream, sessions: Arc<Mutex<HashMap<i32, Session
                     .get_mut(&session_code)
                     .expect("should contain a session");
 
-                session.participants.append(&mut session.unready);
+                // change all unready to participants
+                for connection in &mut session.connections {
+                    if connection.connection_type == ConnectionType::Unready {
+                        connection.connection_type = ConnectionType::Participant;
+                        let _ = connection.type_sender.send(ConnectionType::Participant);
+                    }
+                }
             }
 
-            _ => match client_type {
-                ClientType::Host => {
+            MessageType::SessionExit => {
+                let mut sessions = sessions.lock().unwrap();
+                let session = sessions
+                    .get_mut(&session_code)
+                    .expect("should contain a session");
+
+                match connection_type {
+                    ConnectionType::Host => {
+                        let message = Message::new_session_end();
+                        session.broadcast_non_host(message);
+
+                        sessions.remove(&session_code);
+                        connection_type = ConnectionType::None;
+                    }
+
+                    _ => {
+                        // removing participant
+                        session.connections.retain(|conn| {
+                            conn.socket.peer_addr().unwrap() != socket.peer_addr().unwrap()
+                        });
+
+                        session.broadcast_all(message);
+
+                        let message = Message::new_session_end();
+                        message.send(&mut socket).unwrap();
+
+                        connection_type = ConnectionType::None;
+                    }
+                }
+            }
+
+            MessageType::Shutdown => {
+                socket
+                    .shutdown(std::net::Shutdown::Both)
+                    .expect("Could not close socket.");
+
+                break;
+            }
+
+            MessageType::Screen => {
+                let mut sessions = sessions.lock().unwrap();
+                let session = sessions
+                    .get_mut(&session_code)
+                    .expect("should contain a session");
+
+                session.broadcast_participants(message);
+            }
+
+            _ => match connection_type {
+                ConnectionType::Host => {
                     // forward the message to all participants
                     let mut sessions = sessions.lock().unwrap();
                     let session = sessions
                         .get_mut(&session_code)
                         .expect("should contain a session");
 
-                    for participant in &mut session.participants {
-                        message.send(participant).unwrap();
-                    }
+                    session.broadcast_non_host(message);
                 }
 
-                ClientType::Participant => {
+                _ => {
                     // forward the message to the host
                     let mut sessions = sessions.lock().unwrap();
                     let session = sessions
                         .get_mut(&session_code)
                         .expect("should contain a session");
 
-                    message.send(&mut session.host).unwrap();
+                    message.send(&mut session.host()).unwrap();
                 }
-
-                _ => (),
             },
         }
     }
@@ -135,12 +272,7 @@ fn main() {
                 let sessions_clone = sessions.clone();
                 thread::spawn(move || handle_client(socket, sessions_clone));
             }
-            Err(e) => println!("Couldn't accept client: {e:?}"),
+            Err(e) => eprintln!("Couldn't accept client: {e:?}"),
         }
     }
-
-    // match listener.accept() {
-    //     Ok((socket, _addr)) => handle_connection(socket),
-    //     Err(e) => println!("Couldn't accept client: {e:?}"),
-    // }
 }

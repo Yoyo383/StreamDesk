@@ -1,11 +1,11 @@
-use eframe::egui::{self, load::SizedTexture, Ui};
+use eframe::egui::{self, pos2, Color32, Rect, Sense, Stroke, Ui, Vec2};
 use remote_desktop::{
     egui_key_to_vk, normalize_mouse_position,
     protocol::{Message, MessageType},
     AppData, Scene, SceneChange,
 };
 
-use crate::modifiers_state::ModifiersState;
+use crate::{menu_scene::MenuScene, modifiers_state::ModifiersState};
 use std::{
     collections::VecDeque,
     io::{Read, Write},
@@ -15,7 +15,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
-    thread,
+    thread::{self, JoinHandle},
     time::Instant,
 };
 
@@ -45,40 +45,66 @@ fn start_ffmpeg() -> Child {
     ffmpeg
 }
 
-fn thread_receive_encoded(
+fn thread_receive_socket(
     mut socket: TcpStream,
     mut stdin: ChildStdin,
     stop_flag: Arc<AtomicBool>,
-) {
+    usernames: Arc<Mutex<Vec<String>>>,
+) -> JoinHandle<()> {
     thread::spawn(move || {
         while !stop_flag.load(Ordering::Relaxed) {
-            if let Some(message) = Message::receive(&mut socket) {
-                if message.message_type == MessageType::Screen {
-                    stdin.write_all(&message.screen_data).unwrap();
+            let message = Message::receive(&mut socket).unwrap_or_default();
+
+            match message.message_type {
+                MessageType::Screen => {
+                    stdin.write_all(&message.vector_data).unwrap();
                 }
+
+                MessageType::Joining => {
+                    let mut usernames = usernames.lock().unwrap();
+                    usernames.push(
+                        String::from_utf8(message.vector_data).expect("bytes should be utf8"),
+                    );
+                }
+
+                MessageType::SessionExit => {
+                    // remove username from usernames
+                    let username =
+                        String::from_utf8(message.vector_data).expect("bytes should be utf8");
+
+                    let mut usernames = usernames.lock().unwrap();
+                    usernames.retain(|name| *name != username);
+                }
+
+                MessageType::SessionEnd => {
+                    // signal all threads
+                    stop_flag.store(true, Ordering::Relaxed);
+                }
+
+                _ => {}
             }
         }
-    });
+    })
 }
 
 fn thread_read_decoded(
     frame_queue: Arc<Mutex<VecDeque<Vec<u8>>>>,
     mut stdout: ChildStdout,
     stop_flag: Arc<AtomicBool>,
-) {
+) -> JoinHandle<()> {
     thread::spawn(move || {
         let mut rgba_buffer = vec![0u8; 1920 * 1080 * 4];
         while !stop_flag.load(Ordering::Relaxed) {
-            stdout.read_exact(&mut rgba_buffer).unwrap();
+            if let Ok(()) = stdout.read_exact(&mut rgba_buffer) {
+                let mut queue = frame_queue.lock().unwrap();
 
-            let mut queue = frame_queue.lock().unwrap();
-
-            if queue.len() > 1 {
-                queue.pop_front();
+                if queue.len() > 1 {
+                    queue.pop_front();
+                }
+                queue.push_back(rgba_buffer.clone());
             }
-            queue.push_back(rgba_buffer.clone());
         }
-    });
+    })
 }
 
 pub struct MainScene {
@@ -88,10 +114,16 @@ pub struct MainScene {
     current_frame: Vec<u8>,
     modifiers_state: ModifiersState,
     stop_flag: Arc<AtomicBool>,
+    image_rect: Rect,
+    usernames: Arc<Mutex<Vec<String>>>,
+    username: String,
+    thread_receive_socket: Option<JoinHandle<()>>,
+    thread_read_decoded: Option<JoinHandle<()>>,
+    ffmpeg_command: Child,
 }
 
 impl MainScene {
-    pub fn new(app_data: &mut AppData) -> Self {
+    pub fn new(app_data: &mut AppData, usernames: Vec<String>, username: String) -> Self {
         let mut ffmpeg = start_ffmpeg();
         let stdin = ffmpeg.stdin.take().unwrap();
         let stdout = ffmpeg.stdout.take().unwrap();
@@ -101,12 +133,15 @@ impl MainScene {
 
         let stop_flag = Arc::new(AtomicBool::new(false));
 
-        thread_receive_encoded(
+        let usernames = Arc::new(Mutex::new(usernames));
+
+        let thread_receive_socket = thread_receive_socket(
             app_data.socket.as_mut().unwrap().try_clone().unwrap(),
             stdin,
             stop_flag.clone(),
+            usernames.clone(),
         );
-        thread_read_decoded(frame_queue_clone, stdout, stop_flag.clone());
+        let thread_read_decoded = thread_read_decoded(frame_queue_clone, stdout, stop_flag.clone());
 
         Self {
             now: Instant::now(),
@@ -115,6 +150,15 @@ impl MainScene {
             current_frame: vec![0u8; 1920 * 1080 * 4],
             modifiers_state: ModifiersState::new(),
             stop_flag,
+            image_rect: Rect {
+                min: pos2(0.0, 0.0),
+                max: pos2(0.0, 0.0),
+            },
+            usernames,
+            username,
+            thread_receive_socket: Some(thread_receive_socket),
+            thread_read_decoded: Some(thread_read_decoded),
+            ffmpeg_command: ffmpeg,
         }
     }
 
@@ -136,8 +180,8 @@ impl MainScene {
                     pressed,
                     ..
                 } => {
-                    let mouse_position =
-                        normalize_mouse_position(*pos, app_data.width, app_data.height);
+                    let mouse_position = normalize_mouse_position(*pos, self.image_rect);
+
                     let message = Message::new_mouse_click(*button, mouse_position, *pressed);
                     message.send(socket).unwrap();
                 }
@@ -155,8 +199,8 @@ impl MainScene {
                 }
 
                 egui::Event::PointerMoved(new_pos) => {
-                    let mouse_position =
-                        normalize_mouse_position(*new_pos, app_data.width, app_data.height);
+                    let mouse_position = normalize_mouse_position(*new_pos, self.image_rect);
+
                     let message = Message::new_mouse_move(mouse_position);
                     message.send(socket).unwrap();
                 }
@@ -171,7 +215,71 @@ impl MainScene {
         }
     }
 
-    fn render(&mut self, ui: &mut Ui, ctx: &egui::Context, app_data: &mut AppData) {
+    fn central_panel_ui(&mut self, ui: &mut Ui, ctx: &egui::Context, app_data: &mut AppData) {
+        let texture = egui::ColorImage::from_rgba_unmultiplied([1920, 1080], &self.current_frame);
+        let handle = ctx.load_texture("screen", texture, egui::TextureOptions::default());
+
+        let available_size = ui.available_size();
+
+        let scale = {
+            let scale_x = available_size.x / 1920.0;
+            let scale_y = available_size.y / 1080.0;
+            scale_x.min(scale_y)
+        };
+
+        let final_size = Vec2::new(1920.0, 1080.0) * scale;
+
+        let available_rect = ui.max_rect();
+        let top_left = available_rect.center() - final_size * 0.5;
+        let centered_rect = Rect::from_min_size(top_left, final_size);
+
+        // allocate the space exactly at the centered position
+        let response = ui.allocate_rect(centered_rect, Sense::hover());
+        self.image_rect = centered_rect;
+
+        ui.painter().image(
+            handle.id(),
+            self.image_rect,
+            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+            Color32::WHITE,
+        );
+
+        // put a border
+        let stroke = Stroke::new(1.0, Color32::WHITE);
+        ui.painter()
+            .rect_stroke(centered_rect, 0.0, stroke, egui::StrokeKind::Outside);
+
+        if response.hovered() {
+            ui.ctx().memory_mut(|mem| mem.request_focus(egui::Id::NULL));
+            ui.input(|input| self.handle_input(input, app_data));
+        }
+
+        ctx.request_repaint();
+    }
+
+    fn disconnect(&mut self, socket: &mut TcpStream) -> SceneChange {
+        let message = Message::new_session_exit(&self.username);
+        message.send(socket).unwrap();
+
+        self.stop_flag.store(true, Ordering::Relaxed);
+
+        let _ = self.thread_receive_socket.take().unwrap().join();
+        let _ = self.thread_read_decoded.take().unwrap().join();
+        let _ = self.ffmpeg_command.kill();
+
+        SceneChange::To(Box::new(MenuScene::new(None, true)))
+    }
+}
+
+impl Scene for MainScene {
+    fn update(&mut self, ctx: &egui::Context, app_data: &mut AppData) -> Option<SceneChange> {
+        let mut result: Option<SceneChange> = None;
+
+        let now = Instant::now();
+        let dt = now.duration_since(self.now).as_secs_f32();
+        self.now = now;
+        self.elapsed_time += dt;
+
         if self.elapsed_time > 1. / 30. {
             self.elapsed_time = 0.;
             if let Some(image) = self.frame_queue.lock().unwrap().pop_front() {
@@ -179,36 +287,45 @@ impl MainScene {
             }
         }
 
-        let texture = egui::ColorImage::from_rgba_unmultiplied([1920, 1080], &self.current_frame);
-        let handle = ctx.load_texture("screen", texture, egui::TextureOptions::default());
-        let sized_texture = SizedTexture::new(&handle, ui.available_size());
-        ui.image(sized_texture);
+        if self.stop_flag.load(Ordering::Relaxed) {
+            let _ = self.ffmpeg_command.kill();
+            let _ = self.thread_receive_socket.take().unwrap().join();
+            let _ = self.thread_read_decoded.take().unwrap().join();
 
-        ui.input(|input| self.handle_input(input, app_data));
+            return Some(SceneChange::To(Box::new(MenuScene::new(None, true))));
+        }
 
-        ctx.request_repaint();
-    }
-}
+        egui::SidePanel::right("participants").show(ctx, |ui| {
+            ui.heading("Participants");
+            ui.separator();
 
-impl Scene for MainScene {
-    fn update(&mut self, ctx: &egui::Context, app_data: &mut AppData) -> Option<SceneChange> {
-        let now = Instant::now();
-        let dt = now.duration_since(self.now).as_secs_f32();
-        self.now = now;
-        self.elapsed_time += dt;
+            let usernames = self.usernames.lock().unwrap();
+            for username in usernames.iter() {
+                ui.label(username);
+            }
+        });
 
-        egui::CentralPanel::default()
-            .frame(egui::Frame::NONE)
+        egui::TopBottomPanel::bottom("disconnect_panel")
+            .resizable(false)
             .show(ctx, |ui| {
-                self.render(ui, ctx, app_data);
+                ui.vertical_centered(|ui| {
+                    if ui.button("Disconnect").clicked() {
+                        result = Some(self.disconnect(app_data.socket.as_mut().unwrap()));
+                    }
+                });
             });
 
-        None
+        egui::CentralPanel::default().show(ctx, |ui| {
+            self.central_panel_ui(ui, ctx, app_data);
+        });
+
+        result
     }
 
     fn on_exit(&mut self, app_data: &mut AppData) {
-        self.stop_flag.store(true, Ordering::Relaxed);
         let socket = app_data.socket.as_mut().unwrap();
+
+        self.disconnect(socket);
 
         let message = Message::new_shutdown();
         message.send(socket).unwrap();

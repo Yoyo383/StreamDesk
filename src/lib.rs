@@ -1,6 +1,6 @@
 use std::net::TcpStream;
 
-use eframe::egui::{self, Key, Pos2};
+use eframe::egui::{self, Key, Pos2, Rect};
 
 pub mod protocol;
 
@@ -96,16 +96,14 @@ pub fn egui_key_to_vk(key: &Key) -> Option<u16> {
     })
 }
 
-pub fn normalize_mouse_position(mouse_position: Pos2, width: f32, height: f32) -> (i32, i32) {
-    let x = (mouse_position.x / width) * 65535.0;
-    let y = (mouse_position.y / height) * 65535.0;
+pub fn normalize_mouse_position(mouse_position: Pos2, image_rect: Rect) -> (i32, i32) {
+    let x = (mouse_position.x - image_rect.left()) * 65535.0 / image_rect.width();
+    let y = (mouse_position.y - image_rect.top()) * 65535.0 / image_rect.height();
     (x as i32, y as i32)
 }
 
 pub struct AppData {
     pub socket: Option<TcpStream>,
-    pub width: f32,
-    pub height: f32,
 }
 
 pub enum SceneChange {
