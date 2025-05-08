@@ -332,7 +332,7 @@ impl HostScene {
         let message = Message::new_session_exit(&self.username);
         message.send(socket).unwrap();
 
-        SceneChange::To(Box::new(MenuScene::new(None, true)))
+        SceneChange::To(Box::new(MenuScene::new(self.username.clone())))
     }
 }
 

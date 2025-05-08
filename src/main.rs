@@ -3,10 +3,11 @@ use std::sync::mpsc::{self, Sender};
 use std::thread;
 
 use eframe::{egui, NativeOptions};
-use menu_scene::MenuScene;
+use login_scene::LoginScene;
 use remote_desktop::{AppData, Scene, SceneChange};
 
 mod host_scene;
+mod login_scene;
 mod main_scene;
 mod menu_scene;
 mod modifiers_state;
@@ -30,11 +31,12 @@ impl MyApp {
         let (sender, receiver) = mpsc::channel();
         connect_to_server(sender);
 
-        let menu = MenuScene::new(Some(receiver), false);
+        // let menu = MenuScene::new(Some(receiver), false);
+        let login = LoginScene::new(Some(receiver), false);
 
         Self {
             data,
-            scene: Box::new(menu),
+            scene: Box::new(login),
         }
     }
 }

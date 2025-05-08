@@ -267,7 +267,7 @@ impl MainScene {
         let _ = self.thread_read_decoded.take().unwrap().join();
         let _ = self.ffmpeg_command.kill();
 
-        SceneChange::To(Box::new(MenuScene::new(None, true)))
+        SceneChange::To(Box::new(MenuScene::new(self.username.clone())))
     }
 }
 
@@ -292,7 +292,9 @@ impl Scene for MainScene {
             let _ = self.thread_receive_socket.take().unwrap().join();
             let _ = self.thread_read_decoded.take().unwrap().join();
 
-            return Some(SceneChange::To(Box::new(MenuScene::new(None, true))));
+            return Some(SceneChange::To(Box::new(MenuScene::new(
+                self.username.clone(),
+            ))));
         }
 
         egui::SidePanel::right("participants").show(ctx, |ui| {

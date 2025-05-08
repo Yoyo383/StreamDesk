@@ -1,5 +1,6 @@
 use rand::Rng;
 use remote_desktop::protocol::{Message, MessageType};
+use rusqlite::params;
 use std::{
     collections::HashMap,
     net::{TcpListener, TcpStream},
@@ -9,6 +10,8 @@ use std::{
     },
     thread,
 };
+
+const DATABASE_FILE: &'static str = "database.sqlite";
 
 #[derive(PartialEq, Eq, Debug)]
 enum ConnectionType {
@@ -95,6 +98,8 @@ fn handle_client(mut socket: TcpStream, sessions: Arc<Mutex<HashMap<i32, Session
     let mut session_code: i32 = -1;
     let mut type_receiver: Option<Receiver<ConnectionType>> = None;
 
+    let conn = rusqlite::Connection::open(DATABASE_FILE).unwrap();
+
     loop {
         if let Some(ref receiver) = type_receiver {
             if let Ok(new_type) = receiver.try_recv() {
@@ -104,6 +109,66 @@ fn handle_client(mut socket: TcpStream, sessions: Arc<Mutex<HashMap<i32, Session
         let message = Message::receive(&mut socket).unwrap();
 
         match message.message_type {
+            MessageType::Login => {
+                // get username and password
+                let username_password =
+                    String::from_utf8(message.vector_data).expect("bytes should be utf8");
+                let newline_pos = username_password.find('\n').unwrap();
+
+                let username = &username_password[..newline_pos];
+                let password = &username_password[newline_pos + 1..];
+
+                // query database
+                let user_id_result: Result<i32, rusqlite::Error> = conn.query_row(
+                    "SELECT id FROM users WHERE username = ?1 AND password = ?2",
+                    params![username, password],
+                    |row| row.get(0),
+                );
+
+                match user_id_result {
+                    Ok(_) => {
+                        let message = Message::new_login(username, password);
+                        message.send(&mut socket).unwrap();
+                    }
+                    Err(rusqlite::Error::QueryReturnedNoRows) => {
+                        let message = Message::default();
+                        message.send(&mut socket).unwrap();
+                    }
+                    _ => (),
+                }
+            }
+
+            MessageType::Register => {
+                // get username and password
+                let username_password =
+                    String::from_utf8(message.vector_data).expect("bytes should be utf8");
+                let newline_pos = username_password.find('\n').unwrap();
+
+                let username = &username_password[..newline_pos];
+                let password = &username_password[newline_pos + 1..];
+
+                let inserted = conn.execute(
+                    "INSERT INTO users (username, password) VALUES (?1, ?2)",
+                    params![username, password],
+                );
+
+                match inserted {
+                    Ok(_) => {
+                        let message = Message::new_register(username, password);
+                        message.send(&mut socket).unwrap();
+                    }
+
+                    Err(rusqlite::Error::SqliteFailure(e, _))
+                        if e.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE =>
+                    {
+                        let message = Message::default();
+                        message.send(&mut socket).unwrap();
+                    }
+
+                    _ => (),
+                }
+            }
+
             MessageType::Hosting => {
                 let username =
                     String::from_utf8(message.vector_data).expect("bytes should be utf8");
@@ -262,6 +327,19 @@ fn handle_client(mut socket: TcpStream, sessions: Arc<Mutex<HashMap<i32, Session
 }
 
 fn main() {
+    // TODO: create database
+    let conn = rusqlite::Connection::open(DATABASE_FILE).unwrap();
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS users(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            password TEXT NOT NULL
+        )
+        ",
+        [],
+    )
+    .unwrap();
+
     let listener = TcpListener::bind("0.0.0.0:7643").expect("Could not bind listener");
 
     let sessions: Arc<Mutex<HashMap<i32, Session>>> = Arc::new(Mutex::new(HashMap::new()));

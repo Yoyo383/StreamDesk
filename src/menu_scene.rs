@@ -1,9 +1,7 @@
-use std::{net::TcpStream, sync::mpsc::Receiver};
-
 use eframe::egui::{self, Align, Button, Color32, FontId, Layout, RichText, TextEdit, Ui};
 use remote_desktop::{protocol::Message, AppData, Scene, SceneChange};
 
-use crate::{host_scene::HostScene, main_scene::MainScene};
+use crate::{host_scene::HostScene, login_scene::LoginScene, main_scene::MainScene};
 
 fn numeric_text_edit(ui: &mut Ui, value: &mut String) {
     let response = ui.add(
@@ -20,22 +18,16 @@ fn numeric_text_edit(ui: &mut Ui, value: &mut String) {
 
 pub struct MenuScene {
     session_code: String,
-    socket_receiver: Option<Receiver<Option<TcpStream>>>,
-    connected_to_server: bool,
-    failed_to_connect: bool,
     join_fail_message: String,
     username: String,
 }
 
 impl MenuScene {
-    pub fn new(receiver: Option<Receiver<Option<TcpStream>>>, connected_to_server: bool) -> Self {
+    pub fn new(username: String) -> Self {
         Self {
             session_code: String::new(),
-            socket_receiver: receiver,
-            connected_to_server,
-            failed_to_connect: false,
             join_fail_message: String::new(),
-            username: String::new(),
+            username,
         }
     }
 
@@ -85,17 +77,6 @@ impl Scene for MenuScene {
     fn update(&mut self, ctx: &egui::Context, app_data: &mut AppData) -> Option<SceneChange> {
         let mut result: Option<SceneChange> = None;
 
-        if !self.connected_to_server {
-            match self.socket_receiver.as_ref().unwrap().try_recv() {
-                Ok(Some(socket)) => {
-                    app_data.socket = Some(socket);
-                    self.connected_to_server = true;
-                }
-                Ok(None) => self.failed_to_connect = true,
-                _ => (),
-            }
-        }
-
         egui::TopBottomPanel::top("title_bar").show(ctx, |ui| {
             ui.with_layout(Layout::top_down(Align::Center), |ui| {
                 ui.label(RichText::new("Remote Desktop").size(40.0));
@@ -105,34 +86,22 @@ impl Scene for MenuScene {
         egui::TopBottomPanel::bottom("connection_status")
             .resizable(false)
             .show(ctx, |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(10.0);
-                    ui.add(
-                        TextEdit::singleline(&mut self.username)
-                            .hint_text("Enter username")
-                            .font(FontId::proportional(30.0)),
-                    );
+                ui.add_space(10.0);
 
-                    ui.add_space(10.0);
-
-                    if self.failed_to_connect {
-                        ui.label(
-                            RichText::new("Failed to connect to server.")
-                                .color(Color32::RED)
-                                .size(20.0),
-                        );
-                    } else if self.connected_to_server {
-                        ui.label(
-                            RichText::new("Connected to server!")
-                                .color(Color32::GREEN)
-                                .size(20.0),
-                        );
-                    } else {
-                        ui.label(RichText::new("Connecting to server...").size(20.0));
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(egui::Button::new(
+                            egui::RichText::new("Sign out").size(20.0),
+                        ))
+                        .clicked()
+                    {
+                        result = Some(SceneChange::To(Box::new(LoginScene::new(None, true))));
                     }
 
-                    ui.add_space(10.0);
-                })
+                    ui.label(RichText::new(format!("Username: {}", self.username)).size(20.0));
+                });
+
+                ui.add_space(10.0);
             });
 
         let available_width = ctx.available_rect().width();
@@ -142,9 +111,6 @@ impl Scene for MenuScene {
             .resizable(false)
             .exact_width(panel_width)
             .show(ctx, |ui| {
-                if !self.connected_to_server {
-                    ui.disable();
-                }
                 ui.vertical_centered(|ui| {
                     ui.add_space(10.0);
                     ui.label(RichText::new("Join Session").size(20.0));
@@ -185,9 +151,6 @@ impl Scene for MenuScene {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.vertical_centered(|ui| {
-                if !self.connected_to_server {
-                    ui.disable();
-                }
                 ui.label(RichText::new("Host Session").size(20.0));
                 ui.add_space(10.0);
 

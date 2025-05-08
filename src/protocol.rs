@@ -20,6 +20,8 @@ pub enum MessageType {
     MergeUnready,
     SessionExit,
     SessionEnd,
+    Login,
+    Register,
 }
 
 #[derive(Debug)]
@@ -142,6 +144,24 @@ impl Message {
         }
     }
 
+    pub fn new_login(username: &str, password: &str) -> Self {
+        let message = username.to_owned() + "\n" + password;
+        Self {
+            message_type: MessageType::Login,
+            vector_data: message.into_bytes(),
+            ..Default::default()
+        }
+    }
+
+    pub fn new_register(username: &str, password: &str) -> Self {
+        let message = username.to_owned() + "\n" + password;
+        Self {
+            message_type: MessageType::Register,
+            vector_data: message.into_bytes(),
+            ..Default::default()
+        }
+    }
+
     pub fn send(&self, socket: &mut TcpStream) -> std::io::Result<()> {
         let bytes = self.to_bytes();
 
@@ -195,6 +215,8 @@ impl Message {
             9 => Some(MessageType::MergeUnready),
             10 => Some(MessageType::SessionExit),
             11 => Some(MessageType::SessionEnd),
+            12 => Some(MessageType::Login),
+            13 => Some(MessageType::Register),
             _ => None,
         }?;
         let mouse_button = match bytes[1] {
