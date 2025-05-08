@@ -234,7 +234,7 @@ impl MainScene {
         let centered_rect = Rect::from_min_size(top_left, final_size);
 
         // allocate the space exactly at the centered position
-        let response = ui.allocate_rect(centered_rect, Sense::click());
+        let response = ui.allocate_rect(centered_rect, Sense::click_and_drag());
         self.image_rect = centered_rect;
 
         ui.painter().image(
