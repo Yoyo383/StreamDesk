@@ -4,7 +4,7 @@ use h264_reader::{
     nal::{Nal, RefNal, UnitType},
     push::NalInterest,
 };
-use remote_desktop::{protocol::MessageType, AppData, Scene, SceneChange};
+use remote_desktop::{protocol::MessageType, users_list, AppData, Scene, SceneChange};
 
 use eframe::egui::PointerButton;
 use remote_desktop::protocol::Message;
@@ -141,7 +141,7 @@ fn thread_read_socket(
                     let username =
                         String::from_utf8(message.vector_data).expect("bytes should be utf8");
 
-                    usernames.retain(|name| *name != username);
+                    usernames.retain(|name| name[1..] != username);
                 }
 
                 MessageType::MouseClick => {
@@ -303,7 +303,7 @@ impl HostScene {
         let thread_send_screen =
             thread_send_screen(socket.try_clone().unwrap(), stdout, stop_flag.clone());
 
-        let usernames = Arc::new(Mutex::new(vec![username.clone()]));
+        let usernames = Arc::new(Mutex::new(vec![1.to_string() + &username]));
 
         let thread_read_socket = thread_read_socket(
             socket.try_clone().unwrap(),
@@ -344,12 +344,7 @@ impl Scene for HostScene {
             ui.heading(format!("Hosting, code {}", self.session_code));
             ui.separator();
 
-            {
-                let usernames = self.usernames.lock().unwrap();
-                for username in usernames.iter() {
-                    ui.label(username);
-                }
-            }
+            users_list(ui, self.usernames.clone(), self.username.clone());
 
             if ui.button("End Session").clicked() {
                 result = Some(self.disconnect(app_data.socket.as_mut().unwrap()));

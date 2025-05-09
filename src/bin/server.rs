@@ -75,8 +75,14 @@ impl Session {
     fn usernames(&self) -> String {
         self.connections
             .iter()
-            .map(|conn| &conn.username)
-            .cloned()
+            .map(|conn| {
+                let user_type: i32 = match conn.connection_type {
+                    ConnectionType::Host => 1,
+                    ConnectionType::Participant | ConnectionType::Unready => 2,
+                    _ => 0,
+                };
+                user_type.to_string() + &conn.username
+            })
             .collect::<Vec<String>>()
             .join("\n")
     }
@@ -192,7 +198,7 @@ fn handle_client(mut socket: TcpStream, sessions: Arc<Mutex<HashMap<i32, Session
                 sessions.insert(session_code, session);
 
                 // send back the session code
-                let message = Message::new_joining(session_code, &username);
+                let message = Message::new_joining(session_code, &(1.to_string() + &username));
                 message.send(&mut socket).unwrap();
             }
 
@@ -211,6 +217,10 @@ fn handle_client(mut socket: TcpStream, sessions: Arc<Mutex<HashMap<i32, Session
                         type_receiver = Some(receiver);
 
                         // send new username to all participants
+
+                        // TODO: idk even know add user type
+                        let mut message = message;
+                        message.vector_data.insert(0, b'2');
                         session.broadcast_all(message);
 
                         connection_type = ConnectionType::Unready;

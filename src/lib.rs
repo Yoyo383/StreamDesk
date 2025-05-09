@@ -1,6 +1,9 @@
-use std::net::TcpStream;
+use std::{
+    net::TcpStream,
+    sync::{Arc, Mutex},
+};
 
-use eframe::egui::{self, Key, Pos2, Rect};
+use eframe::egui::{self, Key, Pos2, Rect, Ui};
 
 pub mod protocol;
 
@@ -100,6 +103,44 @@ pub fn normalize_mouse_position(mouse_position: Pos2, image_rect: Rect) -> (i32,
     let x = (mouse_position.x - image_rect.left()) * 65535.0 / image_rect.width();
     let y = (mouse_position.y - image_rect.top()) * 65535.0 / image_rect.height();
     (x as i32, y as i32)
+}
+
+pub fn users_list(ui: &mut Ui, usernames: Arc<Mutex<Vec<String>>>, username: String) {
+    let usernames = usernames.lock().unwrap();
+
+    let hosts: Vec<String> = usernames
+        .iter()
+        .filter(|s| s.starts_with('1'))
+        .map(|s| s[1..].to_string())
+        .collect();
+
+    let participants: Vec<String> = usernames
+        .iter()
+        .filter(|s| s.starts_with('2'))
+        .map(|s| s[1..].to_string())
+        .collect();
+
+    ui.heading("Host");
+    for host in hosts.iter() {
+        if *host == username {
+            ui.label(format!("{} (You)", host));
+        } else {
+            ui.label(host);
+        }
+    }
+
+    if participants.len() > 0 {
+        ui.add_space(10.0);
+
+        ui.heading("Participants");
+        for participant in participants.iter() {
+            if *participant == username {
+                ui.label(format!("{} (You)", participant));
+            } else {
+                ui.label(participant);
+            }
+        }
+    }
 }
 
 pub struct AppData {

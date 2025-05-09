@@ -2,7 +2,7 @@ use eframe::egui::{self, pos2, Color32, Rect, Sense, Stroke, Ui, Vec2};
 use remote_desktop::{
     egui_key_to_vk, normalize_mouse_position,
     protocol::{Message, MessageType},
-    AppData, Scene, SceneChange,
+    users_list, AppData, Scene, SceneChange,
 };
 
 use crate::{menu_scene::MenuScene, modifiers_state::ModifiersState};
@@ -73,7 +73,7 @@ fn thread_receive_socket(
                         String::from_utf8(message.vector_data).expect("bytes should be utf8");
 
                     let mut usernames = usernames.lock().unwrap();
-                    usernames.retain(|name| *name != username);
+                    usernames.retain(|name| name[1..] != username);
                 }
 
                 MessageType::SessionEnd => {
@@ -301,10 +301,7 @@ impl Scene for MainScene {
             ui.heading("Participants");
             ui.separator();
 
-            let usernames = self.usernames.lock().unwrap();
-            for username in usernames.iter() {
-                ui.label(username);
-            }
+            users_list(ui, self.usernames.clone(), self.username.clone());
         });
 
         egui::TopBottomPanel::bottom("disconnect_panel")
