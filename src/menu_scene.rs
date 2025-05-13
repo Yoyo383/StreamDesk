@@ -1,5 +1,8 @@
 use eframe::egui::{self, Align, Button, Color32, FontId, Layout, RichText, TextEdit, Ui};
-use remote_desktop::{protocol::Message, AppData, Scene, SceneChange};
+use remote_desktop::{
+    protocol::{Packet, ResultPacket},
+    AppData, Scene, SceneChange,
+};
 
 use crate::{host_scene::HostScene, login_scene::LoginScene, main_scene::MainScene};
 
@@ -34,41 +37,38 @@ impl MenuScene {
     fn host_button(&self, app_data: &mut AppData) -> SceneChange {
         let socket = app_data.socket.as_mut().unwrap();
 
-        let host_message = Message::new_hosting(&self.username);
-        host_message.send(socket).unwrap();
+        let host_packet = Packet::Host;
+        host_packet.send(socket).unwrap();
 
-        let join_message = Message::receive(socket).unwrap();
-        // type is MessageType::Joining, to get the session code
-        let session_code = join_message.general_data;
+        let result = ResultPacket::receive(socket).unwrap();
+        let ResultPacket::Success(code) = result else {
+            panic!("should be success");
+        };
 
         SceneChange::To(Box::new(HostScene::new(
-            session_code,
+            code,
             app_data,
             self.username.to_string(),
         )))
     }
 
-    fn join_button(&self, session_code: i32, app_data: &mut AppData) -> Option<SceneChange> {
+    fn join_button(
+        &self,
+        session_code: u32,
+        app_data: &mut AppData,
+    ) -> Result<SceneChange, String> {
         let socket = app_data.socket.as_mut().unwrap();
 
-        let join_message = Message::new_joining(session_code, &self.username);
+        let join_message = Packet::Join { code: session_code };
         join_message.send(socket).unwrap();
 
-        let message = Message::receive(socket).unwrap();
-        if message.general_data == -1 {
-            return None;
-        } else {
-            let usernames: Vec<String> = String::from_utf8(message.vector_data)
-                .expect("bytes should be utf8")
-                .lines()
-                .map(|line| line.to_string())
-                .collect();
-
-            return Some(SceneChange::To(Box::new(MainScene::new(
+        let result = ResultPacket::receive(socket).unwrap();
+        match result {
+            ResultPacket::Failure(msg) => Err(msg),
+            ResultPacket::Success(_) => Ok(SceneChange::To(Box::new(MainScene::new(
                 app_data,
-                usernames,
                 self.username.clone(),
-            ))));
+            )))),
         }
     }
 }
@@ -95,6 +95,11 @@ impl Scene for MenuScene {
                         ))
                         .clicked()
                     {
+                        let signout_packet = Packet::SignOut;
+                        signout_packet
+                            .send(app_data.socket.as_mut().unwrap())
+                            .unwrap();
+
                         result = Some(SceneChange::To(Box::new(LoginScene::new(None, true))));
                     }
 
@@ -120,18 +125,15 @@ impl Scene for MenuScene {
 
                     ui.add_space(10.0);
 
-                    let join_button = ui.add_enabled(!self.username.is_empty(), |ui: &mut Ui| {
+                    let join_button = ui.add(|ui: &mut Ui| {
                         ui.add_sized([100.0, 40.0], Button::new(RichText::new("Join").size(20.0)))
                     });
 
                     if join_button.clicked() {
-                        match self.session_code.parse::<i32>() {
+                        match self.session_code.parse::<u32>() {
                             Ok(session_code) => match self.join_button(session_code, app_data) {
-                                Some(scene_change) => result = Some(scene_change),
-                                None => {
-                                    self.join_fail_message =
-                                        format!("No session found with code {}.", session_code)
-                                }
+                                Ok(scene_change) => result = Some(scene_change),
+                                Err(msg) => self.join_fail_message = msg,
                             },
                             Err(_) => {
                                 self.join_fail_message =
@@ -170,8 +172,11 @@ impl Scene for MenuScene {
     fn on_exit(&mut self, app_data: &mut AppData) {
         let socket = app_data.socket.as_mut().unwrap();
 
-        let message = Message::new_shutdown();
-        message.send(socket).unwrap();
+        let signout_packet = Packet::SignOut;
+        signout_packet.send(socket).unwrap();
+
+        let shutdown_packet = Packet::Shutdown;
+        shutdown_packet.send(socket).unwrap();
 
         socket
             .shutdown(std::net::Shutdown::Both)

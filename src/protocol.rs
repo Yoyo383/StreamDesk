@@ -1,251 +1,491 @@
 use std::{
+    collections::VecDeque,
     io::{Read, Write},
     net::TcpStream,
 };
 
 use eframe::egui::PointerButton;
 
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MessageType {
-    None,
-    MouseClick,
-    MouseMove,
-    Scroll,
-    Keyboard,
-    Screen,
-    Shutdown,
-    Hosting,
-    Joining,
-    MergeUnready,
-    SessionExit,
-    SessionEnd,
-    Login,
-    Register,
+use crate::UserType;
+
+pub fn get_u32_from_packet(bytes: &mut VecDeque<u8>) -> Option<u32> {
+    let data: Vec<u8> = bytes.drain(0..4).collect();
+    Some(u32::from_be_bytes(data.try_into().ok()?))
 }
 
-#[derive(Debug)]
-#[repr(C)]
-pub struct Message {
-    pub message_type: MessageType,
-    pub mouse_button: PointerButton,
-    pub mouse_position: (i32, i32),
-    pub key: u16,
-    pub pressed: bool,
-    pub general_data: i32,
-    pub vector_data: Vec<u8>,
+pub fn get_i32_from_packet(bytes: &mut VecDeque<u8>) -> Option<i32> {
+    let data: Vec<u8> = bytes.drain(0..4).collect();
+    Some(i32::from_be_bytes(data.try_into().ok()?))
 }
 
-impl Default for Message {
-    fn default() -> Self {
-        Self {
-            message_type: MessageType::None,
-            mouse_button: PointerButton::Primary,
-            mouse_position: Default::default(),
-            key: Default::default(),
-            pressed: Default::default(),
-            general_data: Default::default(),
-            vector_data: Default::default(),
-        }
-    }
+pub fn get_u16_from_packet(bytes: &mut VecDeque<u8>) -> Option<u16> {
+    let data: Vec<u8> = bytes.drain(0..4).collect();
+    Some(u16::from_be_bytes(data.try_into().ok()?))
 }
 
-impl Message {
-    pub fn new_mouse_click(
-        mouse_button: PointerButton,
-        mouse_position: (i32, i32),
-        pressed: bool,
-    ) -> Self {
-        Self {
-            message_type: MessageType::MouseClick,
-            mouse_button,
-            mouse_position,
-            pressed,
-            ..Default::default()
+/// Reads a `u32` integer from the socket (in big endian) and then reads that number of bytes.
+fn read_length_and_data(socket: &mut TcpStream) -> std::io::Result<Vec<u8>> {
+    let mut len_buf = [0u8; 4];
+    socket.read_exact(&mut len_buf)?;
+    let len = u32::from_be_bytes(len_buf);
+
+    let mut data = vec![0u8; len as usize];
+    socket.read_exact(&mut data)?;
+
+    Ok(data)
+}
+
+pub enum ResultPacket {
+    Failure(String),
+    Success(String),
+}
+
+impl ResultPacket {
+    /// Turns a `ResultPacket` into bytes that can be sent over a socket.
+    fn to_bytes(&self) -> Vec<u8> {
+        match self {
+            ResultPacket::Failure(msg) => {
+                let mut result = vec![0u8];
+                result.extend_from_slice(&(msg.len() as u32).to_be_bytes());
+                result.extend_from_slice(msg.as_bytes());
+
+                result
+            }
+
+            ResultPacket::Success(msg) => {
+                let mut result = vec![1u8];
+                result.extend_from_slice(&(msg.len() as u32).to_be_bytes());
+                result.extend_from_slice(msg.as_bytes());
+
+                result
+            }
         }
     }
 
-    pub fn new_mouse_move(mouse_position: (i32, i32)) -> Self {
-        Self {
-            message_type: MessageType::MouseMove,
-            mouse_position,
-            ..Default::default()
-        }
-    }
-
-    pub fn new_scroll(delta: f32) -> Self {
-        Self {
-            message_type: MessageType::Scroll,
-            general_data: delta as i32,
-            ..Default::default()
-        }
-    }
-
-    pub fn new_keyboard(key: u16, pressed: bool) -> Self {
-        Self {
-            message_type: MessageType::Keyboard,
-            key,
-            pressed,
-            ..Default::default()
-        }
-    }
-
-    pub fn new_screen(screen_data: Vec<u8>) -> Self {
-        Self {
-            message_type: MessageType::Screen,
-            vector_data: screen_data,
-            ..Default::default()
-        }
-    }
-
-    pub fn new_shutdown() -> Self {
-        Self {
-            message_type: MessageType::Shutdown,
-            ..Default::default()
-        }
-    }
-
-    pub fn new_hosting(username: &str) -> Self {
-        Self {
-            message_type: MessageType::Hosting,
-            vector_data: username.as_bytes().to_vec(),
-            ..Default::default()
-        }
-    }
-
-    pub fn new_joining(session_code: i32, username: &str) -> Self {
-        Self {
-            message_type: MessageType::Joining,
-            general_data: session_code,
-            vector_data: username.as_bytes().to_vec(),
-            ..Default::default()
-        }
-    }
-
-    pub fn new_merge_unready() -> Self {
-        Self {
-            message_type: MessageType::MergeUnready,
-            ..Default::default()
-        }
-    }
-
-    pub fn new_session_exit(username: &str) -> Self {
-        Self {
-            message_type: MessageType::SessionExit,
-            vector_data: username.as_bytes().to_vec(),
-            ..Default::default()
-        }
-    }
-
-    pub fn new_session_end() -> Self {
-        Self {
-            message_type: MessageType::SessionEnd,
-            ..Default::default()
-        }
-    }
-
-    pub fn new_login(username: &str, password: &str) -> Self {
-        let message = username.to_owned() + "\n" + password;
-        Self {
-            message_type: MessageType::Login,
-            vector_data: message.into_bytes(),
-            ..Default::default()
-        }
-    }
-
-    pub fn new_register(username: &str, password: &str) -> Self {
-        let message = username.to_owned() + "\n" + password;
-        Self {
-            message_type: MessageType::Register,
-            vector_data: message.into_bytes(),
-            ..Default::default()
-        }
-    }
-
+    /// Sends the `Packet` through the socket.
     pub fn send(&self, socket: &mut TcpStream) -> std::io::Result<()> {
         let bytes = self.to_bytes();
-
-        // len (8 bytes) and then the message struct
-        let len = bytes.len() as u64;
-        socket.write_all(&len.to_be_bytes())?;
-        socket.write_all(&bytes)?;
-
-        Ok(())
+        socket.write_all(&bytes)
     }
 
+    /// Reads a `Packet` from the socket.
     pub fn receive(socket: &mut TcpStream) -> std::io::Result<Self> {
-        let mut len_buffer = [0u8; 8];
-        socket.read_exact(&mut len_buffer)?;
-        let len = u64::from_be_bytes(len_buffer) as usize;
+        let mut packet_type_buf = [0u8; 1];
+        socket.read_exact(&mut packet_type_buf)?;
+        let packet_type = packet_type_buf[0];
 
-        let mut bytes = vec![0u8; len];
-        socket.read_exact(&mut bytes)?;
+        let msg =
+            String::from_utf8(read_length_and_data(socket)?).expect("bytes should be valid utf8.");
 
-        let message = Message::from_bytes(bytes).ok_or(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "bytes are incorrect",
-        ));
-        message
+        match packet_type {
+            0 => Ok(Self::Failure(msg)),
+            1 => Ok(Self::Success(msg)),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "result type is invalid",
+            )),
+        }
     }
+}
 
+#[derive(PartialEq, Default)]
+pub enum Packet {
+    #[default]
+    None,
+
+    Login {
+        username: String,
+        password: String,
+    },
+
+    Register {
+        username: String,
+        password: String,
+    },
+
+    Host,
+
+    Join {
+        code: u32,
+    },
+
+    UserUpdate {
+        user_type: UserType,
+        username: String,
+    },
+
+    Control {
+        payload: ControlPayload,
+    },
+
+    Screen {
+        bytes: Vec<u8>,
+    },
+
+    MergeUnready,
+
+    SessionExit,
+
+    RequestControl,
+
+    DenyControl,
+
+    SignOut,
+
+    Shutdown,
+
+    SessionEnd,
+}
+
+impl Packet {
+    /// Turns a `Packet` into bytes that can be sent over a socket.
     fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes: Vec<u8> = vec![];
-        bytes.push(self.message_type as u8);
-        bytes.push(self.mouse_button as u8);
-        bytes.extend_from_slice(&self.mouse_position.0.to_be_bytes());
-        bytes.extend_from_slice(&self.mouse_position.1.to_be_bytes());
-        bytes.extend_from_slice(&self.key.to_be_bytes());
-        bytes.push(self.pressed as u8);
-        bytes.extend_from_slice(&self.general_data.to_be_bytes());
-        bytes.extend_from_slice(&self.vector_data);
-        bytes
-    }
+        let mut result: Vec<u8> = vec![];
 
-    fn from_bytes(bytes: Vec<u8>) -> Option<Self> {
-        let message_type = match bytes[0] {
-            0 => Some(MessageType::None),
-            1 => Some(MessageType::MouseClick),
-            2 => Some(MessageType::MouseMove),
-            3 => Some(MessageType::Scroll),
-            4 => Some(MessageType::Keyboard),
-            5 => Some(MessageType::Screen),
-            6 => Some(MessageType::Shutdown),
-            7 => Some(MessageType::Hosting),
-            8 => Some(MessageType::Joining),
-            9 => Some(MessageType::MergeUnready),
-            10 => Some(MessageType::SessionExit),
-            11 => Some(MessageType::SessionEnd),
-            12 => Some(MessageType::Login),
-            13 => Some(MessageType::Register),
-            _ => None,
-        }?;
-        let mouse_button = match bytes[1] {
-            0 => Some(PointerButton::Primary),
-            1 => Some(PointerButton::Secondary),
-            2 => Some(PointerButton::Middle),
-            _ => None,
-        }?;
-        let mouse_position = (
-            i32::from_be_bytes([bytes[2], bytes[3], bytes[4], bytes[5]]),
-            i32::from_be_bytes([bytes[6], bytes[7], bytes[8], bytes[9]]),
-        );
-        let key = u16::from_be_bytes([bytes[10], bytes[11]]);
-        let pressed = bytes[12] != 0;
-        let general_data = i32::from_be_bytes([bytes[13], bytes[14], bytes[15], bytes[16]]);
+        match self {
+            Packet::None => {
+                result.push(0);
+            }
 
-        let mut vector_data: Vec<u8> = Vec::new();
-        if bytes.len() >= 18 {
-            vector_data.extend_from_slice(&bytes[17..]);
+            Packet::Login { username, password } => {
+                result.push(1);
+
+                result.extend_from_slice(&(username.len() as u32).to_be_bytes());
+                result.extend_from_slice(username.as_bytes());
+
+                result.extend_from_slice(&(password.len() as u32).to_be_bytes());
+                result.extend_from_slice(password.as_bytes());
+            }
+
+            Packet::Register { username, password } => {
+                result.push(2);
+
+                result.extend_from_slice(&(username.len() as u32).to_be_bytes());
+                result.extend_from_slice(username.as_bytes());
+
+                result.extend_from_slice(&(password.len() as u32).to_be_bytes());
+                result.extend_from_slice(password.as_bytes());
+            }
+
+            Packet::Host => {
+                result.push(3);
+            }
+
+            Packet::Join { code } => {
+                result.push(4);
+
+                result.extend_from_slice(&code.to_be_bytes());
+            }
+
+            Packet::UserUpdate {
+                user_type,
+                username,
+            } => {
+                result.push(5);
+
+                result.push(*user_type as u8);
+                result.extend_from_slice(&(username.len() as u32).to_be_bytes());
+                result.extend_from_slice(username.as_bytes());
+            }
+
+            Packet::Control { payload } => {
+                result.push(6);
+
+                result.extend_from_slice(&payload.to_bytes());
+            }
+
+            Packet::Screen { bytes } => {
+                result.push(7);
+
+                result.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+                result.extend_from_slice(bytes);
+            }
+
+            Packet::MergeUnready => {
+                result.push(8);
+            }
+
+            Packet::SessionExit => {
+                result.push(9);
+            }
+
+            Packet::RequestControl => {
+                result.push(10);
+            }
+
+            Packet::DenyControl => {
+                result.push(11);
+            }
+
+            Packet::SignOut => {
+                result.push(12);
+            }
+
+            Packet::Shutdown => {
+                result.push(13);
+            }
+
+            Packet::SessionEnd => {
+                result.push(14);
+            }
         }
 
-        Some(Self {
-            message_type,
-            mouse_button,
-            mouse_position,
-            key,
-            pressed,
-            general_data,
-            vector_data,
-        })
+        result
+    }
+
+    /// Sends the `Packet` through the socket.
+    pub fn send(&self, socket: &mut TcpStream) -> std::io::Result<()> {
+        let bytes = self.to_bytes();
+        socket.write_all(&bytes)
+    }
+
+    /// Reads a `Packet` from the socket.
+    pub fn receive(socket: &mut TcpStream) -> std::io::Result<Self> {
+        let mut packet_type_buf = [0u8; 1];
+        socket.read_exact(&mut packet_type_buf)?;
+        let packet_type = packet_type_buf[0];
+
+        match packet_type {
+            0 => Ok(Self::None),
+
+            // Login/Register
+            1 | 2 => {
+                let username = String::from_utf8(read_length_and_data(socket)?)
+                    .expect("bytes should be valid utf8.");
+                let password = String::from_utf8(read_length_and_data(socket)?)
+                    .expect("bytes should be valid utf8.");
+
+                if packet_type == 1 {
+                    Ok(Self::Login { username, password })
+                } else {
+                    Ok(Self::Register { username, password })
+                }
+            }
+
+            // Host
+            3 => Ok(Self::Host),
+
+            // Join
+            4 => {
+                let mut code_buf = [0u8; 4];
+                socket.read_exact(&mut code_buf)?;
+                let code = u32::from_be_bytes(code_buf);
+
+                Ok(Self::Join { code })
+            }
+
+            // UserUpdate
+            5 => {
+                let mut user_type_buf = [0u8; 1];
+                socket.read_exact(&mut user_type_buf)?;
+                let user_type_raw = user_type_buf[0];
+                let user_type = match user_type_raw {
+                    0 => UserType::Leaving,
+                    1 => UserType::Host,
+                    2 => UserType::Controller,
+                    3 => UserType::Participant,
+                    _ => {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            "user type is incorrect",
+                        ))
+                    }
+                };
+
+                let username = String::from_utf8(read_length_and_data(socket)?)
+                    .expect("bytes should be valid utf8.");
+
+                Ok(Self::UserUpdate {
+                    user_type,
+                    username,
+                })
+            }
+
+            // Control
+            6 => {
+                let mut payload_type_buf = [0u8; 1];
+                socket.read_exact(&mut payload_type_buf)?;
+                let payload_type = payload_type_buf[0];
+
+                let payload_length = ControlPayload::get_length(payload_type);
+                let mut payload_buf = vec![0u8; payload_length];
+                socket.read_exact(&mut payload_buf)?;
+                payload_buf.insert(0, payload_type);
+
+                let payload = ControlPayload::from_bytes(payload_buf).ok_or(
+                    std::io::Error::new(std::io::ErrorKind::Other, "control payload is invalid"),
+                )?;
+
+                Ok(Self::Control { payload })
+            }
+
+            // Screen
+            7 => {
+                let bytes = read_length_and_data(socket)?;
+
+                Ok(Self::Screen { bytes })
+            }
+
+            // MergeUnready
+            8 => Ok(Self::MergeUnready),
+
+            // SessionExit
+            9 => Ok(Self::SessionExit),
+
+            // RequestControl
+            10 => Ok(Self::RequestControl),
+
+            // DenyControl
+            11 => Ok(Self::DenyControl),
+
+            // SignOut
+            12 => Ok(Self::SignOut),
+
+            // Shutdown
+            13 => Ok(Self::Shutdown),
+
+            14 => Ok(Self::SessionEnd),
+
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "packet type is invalid",
+            )),
+        }
+    }
+}
+
+#[derive(PartialEq)]
+pub enum ControlPayload {
+    MouseMove {
+        mouse_x: u32,
+        mouse_y: u32,
+    },
+
+    MouseClick {
+        mouse_x: u32,
+        mouse_y: u32,
+        pressed: bool,
+        button: PointerButton,
+    },
+
+    Keyboard {
+        pressed: bool,
+        key: u16,
+    },
+
+    Scroll {
+        delta: i32,
+    },
+}
+
+impl ControlPayload {
+    /// Turns a `ControlPayload` into bytes that will then be appended to a `Control` packet.
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut result: Vec<u8> = vec![];
+
+        match self {
+            ControlPayload::MouseMove { mouse_x, mouse_y } => {
+                result.push(0);
+
+                result.extend_from_slice(&mouse_x.to_be_bytes());
+                result.extend_from_slice(&mouse_y.to_be_bytes());
+            }
+
+            ControlPayload::MouseClick {
+                mouse_x,
+                mouse_y,
+                pressed,
+                button,
+            } => {
+                result.push(1);
+
+                result.extend_from_slice(&mouse_x.to_be_bytes());
+                result.extend_from_slice(&mouse_y.to_be_bytes());
+                result.push(*pressed as u8);
+                result.push(*button as u8);
+            }
+
+            ControlPayload::Keyboard { pressed, key } => {
+                result.push(2);
+
+                result.push(*pressed as u8);
+                result.extend_from_slice(&key.to_be_bytes());
+            }
+
+            ControlPayload::Scroll { delta } => {
+                result.push(3);
+
+                result.extend_from_slice(&delta.to_be_bytes());
+            }
+        }
+
+        result
+    }
+
+    /// Turns a vector of bytes into a `ControlPayload`.
+    ///
+    /// Will return `None` if the bytes are not a valid `ControlPayload`.
+    fn from_bytes(bytes: Vec<u8>) -> Option<Self> {
+        let mut bytes = VecDeque::from(bytes);
+        let payload_type = bytes.pop_front()?;
+
+        match payload_type {
+            // MouseMove
+            0 => {
+                let mouse_x = get_u32_from_packet(&mut bytes)?;
+                let mouse_y = get_u32_from_packet(&mut bytes)?;
+
+                Some(Self::MouseMove { mouse_x, mouse_y })
+            }
+
+            // MouseClick
+            1 => {
+                let mouse_x = get_u32_from_packet(&mut bytes)?;
+                let mouse_y = get_u32_from_packet(&mut bytes)?;
+                let pressed = bytes.pop_front()? != 0;
+                let raw_button = bytes.pop_front()?;
+                let button = match raw_button {
+                    0 => PointerButton::Primary,
+                    1 => PointerButton::Secondary,
+                    2 => PointerButton::Middle,
+                    _ => return None,
+                };
+
+                Some(Self::MouseClick {
+                    mouse_x,
+                    mouse_y,
+                    pressed,
+                    button,
+                })
+            }
+
+            // Keyboard
+            2 => {
+                let pressed = bytes.pop_front()? != 0;
+                let key = get_u16_from_packet(&mut bytes)?;
+
+                Some(Self::Keyboard { pressed, key })
+            }
+
+            // Scroll
+            3 => {
+                let delta = get_i32_from_packet(&mut bytes)?;
+
+                Some(Self::Scroll { delta })
+            }
+
+            _ => None,
+        }
+    }
+
+    /// Returns the length in bytes of a payload type.
+    fn get_length(payload_type: u8) -> usize {
+        match payload_type {
+            0 => 8,  // MouseMove
+            1 => 10, // MouseClick
+            2 => 3,  // Keyboard
+            3 => 4,  // Scroll
+            _ => 0,
+        }
     }
 }

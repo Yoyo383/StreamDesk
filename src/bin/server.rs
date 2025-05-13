@@ -1,22 +1,25 @@
 use rand::Rng;
-use remote_desktop::protocol::{Message, MessageType};
-use rusqlite::params;
+use remote_desktop::{
+    protocol::{Packet, ResultPacket},
+    UserType,
+};
+use rusqlite::{ffi::SQLITE_CONSTRAINT_UNIQUE, params, Error::SqliteFailure};
 use std::{
     collections::HashMap,
     net::{TcpListener, TcpStream},
-    sync::{
-        mpsc::{self, Receiver, Sender},
-        Arc, Mutex,
-    },
+    sync::{Arc, Mutex},
     thread,
 };
 
 const DATABASE_FILE: &'static str = "database.sqlite";
 
+type SharedSession = Arc<Mutex<Session>>;
+type SessionHashMap = Arc<Mutex<HashMap<u32, SharedSession>>>;
+
 #[derive(PartialEq, Eq, Debug)]
 enum ConnectionType {
-    None,
     Host,
+    Controller,
     Participant,
     Unready,
 }
@@ -25,39 +28,33 @@ enum ConnectionType {
 struct Connection {
     socket: TcpStream,
     connection_type: ConnectionType,
-    type_sender: Sender<ConnectionType>,
-    username: String,
+    user_type: UserType,
 }
 
 struct Session {
-    connections: Vec<Connection>,
+    connections: HashMap<String, Connection>,
 }
 
 impl Session {
-    fn new(host: Connection) -> Self {
-        Self {
-            connections: vec![host],
+    fn new(host_username: String, host_conn: Connection) -> Self {
+        let mut connections = HashMap::new();
+        connections.insert(host_username, host_conn);
+
+        Self { connections }
+    }
+
+    fn broadcast_all(&mut self, packet: Packet) {
+        for (_, connection) in &mut self.connections {
+            packet.send(&mut connection.socket).unwrap();
         }
     }
 
-    fn broadcast_all(&mut self, message: Message) {
-        for connection in &mut self.connections {
-            message.send(&mut connection.socket).unwrap();
-        }
-    }
-
-    fn broadcast_non_host(&mut self, message: Message) {
-        for connection in &mut self.connections {
-            if connection.connection_type != ConnectionType::Host {
-                message.send(&mut connection.socket).unwrap();
-            }
-        }
-    }
-
-    fn broadcast_participants(&mut self, message: Message) {
-        for connection in &mut self.connections {
-            if connection.connection_type == ConnectionType::Participant {
-                message.send(&mut connection.socket).unwrap();
+    fn broadcast_participants(&mut self, packet: Packet) {
+        for (_, connection) in &mut self.connections {
+            if connection.connection_type == ConnectionType::Participant
+                || connection.connection_type == ConnectionType::Controller
+            {
+                packet.send(&mut connection.socket).unwrap();
             }
         }
     }
@@ -65,33 +62,19 @@ impl Session {
     fn host(&self) -> TcpStream {
         self.connections
             .iter()
-            .find(|conn| conn.connection_type == ConnectionType::Host)
+            .find(|(_, conn)| conn.connection_type == ConnectionType::Host)
             .unwrap()
+            .1
             .socket
             .try_clone()
             .unwrap()
     }
-
-    fn usernames(&self) -> String {
-        self.connections
-            .iter()
-            .map(|conn| {
-                let user_type: i32 = match conn.connection_type {
-                    ConnectionType::Host => 1,
-                    ConnectionType::Participant | ConnectionType::Unready => 2,
-                    _ => 0,
-                };
-                user_type.to_string() + &conn.username
-            })
-            .collect::<Vec<String>>()
-            .join("\n")
-    }
 }
 
-fn generate_session_code(sessions: &HashMap<i32, Session>) -> i32 {
+fn generate_session_code(sessions: &HashMap<u32, SharedSession>) -> u32 {
     let mut rng = rand::rng();
     loop {
-        let code: i32 = rng.random_range(0..1_000_000); // Generates a 6-digit number
+        let code: u32 = rng.random_range(100_000..1_000_000); // Generates a 6-digit number
         println!("{}", code);
         if !sessions.contains_key(&code) {
             return code;
@@ -99,245 +82,263 @@ fn generate_session_code(sessions: &HashMap<i32, Session>) -> i32 {
     }
 }
 
-fn handle_client(mut socket: TcpStream, sessions: Arc<Mutex<HashMap<i32, Session>>>) {
-    let mut connection_type = ConnectionType::None;
-    let mut session_code: i32 = -1;
-    let mut type_receiver: Option<Receiver<ConnectionType>> = None;
+fn login_or_register(
+    packet: Packet,
+    socket: &mut TcpStream,
+    conn: &rusqlite::Connection,
+) -> Option<String> {
+    match packet {
+        Packet::Shutdown => None,
 
-    let conn = rusqlite::Connection::open(DATABASE_FILE).unwrap();
+        Packet::Login { username, password } => {
+            let user_id_result: Result<i32, rusqlite::Error> = conn.query_row(
+                "SELECT id FROM users WHERE username = ?1 AND password = ?2",
+                params![username, password],
+                |row| row.get(0),
+            );
 
-    loop {
-        if let Some(ref receiver) = type_receiver {
-            if let Ok(new_type) = receiver.try_recv() {
-                connection_type = new_type;
+            match user_id_result {
+                Ok(_) => {
+                    let result = ResultPacket::Success("Signing in".to_owned());
+                    result.send(socket).unwrap();
+                    Some(username)
+                }
+                Err(rusqlite::Error::QueryReturnedNoRows) => {
+                    let result =
+                        ResultPacket::Failure("Username or password are incorrect.".to_owned());
+                    result.send(socket).unwrap();
+                    None
+                }
+                _ => {
+                    let result = ResultPacket::Failure("Error signing in.".to_owned());
+                    result.send(socket).unwrap();
+                    None
+                }
             }
         }
-        let message = Message::receive(&mut socket).unwrap();
 
-        match message.message_type {
-            MessageType::Login => {
-                // get username and password
-                let username_password =
-                    String::from_utf8(message.vector_data).expect("bytes should be utf8");
-                let newline_pos = username_password.find('\n').unwrap();
+        Packet::Register { username, password } => {
+            let inserted = conn.execute(
+                "INSERT INTO users (username, password) VALUES (?1, ?2)",
+                params![username, password],
+            );
 
-                let username = &username_password[..newline_pos];
-                let password = &username_password[newline_pos + 1..];
-
-                // query database
-                let user_id_result: Result<i32, rusqlite::Error> = conn.query_row(
-                    "SELECT id FROM users WHERE username = ?1 AND password = ?2",
-                    params![username, password],
-                    |row| row.get(0),
-                );
-
-                match user_id_result {
-                    Ok(_) => {
-                        let message = Message::new_login(username, password);
-                        message.send(&mut socket).unwrap();
-                    }
-                    Err(rusqlite::Error::QueryReturnedNoRows) => {
-                        let message = Message::default();
-                        message.send(&mut socket).unwrap();
-                    }
-                    _ => (),
+            match inserted {
+                Ok(_) => {
+                    let result = ResultPacket::Success("Signing in".to_owned());
+                    result.send(socket).unwrap();
+                    Some(username)
+                }
+                Err(SqliteFailure(e, _)) if e.extended_code == SQLITE_CONSTRAINT_UNIQUE => {
+                    let result = ResultPacket::Failure("Username already taken.".to_owned());
+                    result.send(socket).unwrap();
+                    None
+                }
+                _ => {
+                    let result = ResultPacket::Failure("Error signing up.".to_owned());
+                    result.send(socket).unwrap();
+                    None
                 }
             }
+        }
 
-            MessageType::Register => {
-                // get username and password
-                let username_password =
-                    String::from_utf8(message.vector_data).expect("bytes should be utf8");
-                let newline_pos = username_password.find('\n').unwrap();
+        _ => None,
+    }
+}
 
-                let username = &username_password[..newline_pos];
-                let password = &username_password[newline_pos + 1..];
+fn handle_host(
+    socket: &mut TcpStream,
+    session: SharedSession,
+    sessions: SessionHashMap,
+    code: u32,
+) {
+    loop {
+        let packet = Packet::receive(socket).unwrap();
 
-                let inserted = conn.execute(
-                    "INSERT INTO users (username, password) VALUES (?1, ?2)",
-                    params![username, password],
-                );
-
-                match inserted {
-                    Ok(_) => {
-                        let message = Message::new_register(username, password);
-                        message.send(&mut socket).unwrap();
-                    }
-
-                    Err(rusqlite::Error::SqliteFailure(e, _))
-                        if e.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE =>
-                    {
-                        let message = Message::default();
-                        message.send(&mut socket).unwrap();
-                    }
-
-                    _ => (),
-                }
+        match packet {
+            Packet::Screen { .. } => {
+                let mut session = session.lock().unwrap();
+                session.broadcast_participants(packet);
             }
 
-            MessageType::Hosting => {
-                let username =
-                    String::from_utf8(message.vector_data).expect("bytes should be utf8");
+            Packet::MergeUnready => {
+                let mut session = session.lock().unwrap();
 
-                // start new session
-                let mut sessions = sessions.lock().unwrap();
-                session_code = generate_session_code(&sessions);
-
-                let (sender, receiver) = mpsc::channel();
-                type_receiver = Some(receiver);
-
-                connection_type = ConnectionType::Host;
-                let host_connection = Connection {
-                    socket: socket.try_clone().unwrap(),
-                    connection_type: ConnectionType::Host,
-                    type_sender: sender,
-                    username: username.clone(),
-                };
-
-                let session = Session::new(host_connection);
-                sessions.insert(session_code, session);
-
-                // send back the session code
-                let message = Message::new_joining(session_code, &(1.to_string() + &username));
-                message.send(&mut socket).unwrap();
-            }
-
-            MessageType::Joining => {
-                let mut sessions = sessions.lock().unwrap();
-                session_code = message.general_data;
-
-                // check if the code exists
-                // if code exists, send it back, and if it doesn't exist, send back code -1
-                match sessions.get_mut(&session_code) {
-                    Some(session) => {
-                        let username = String::from_utf8(message.vector_data.clone())
-                            .expect("bytes should be utf8");
-
-                        let (sender, receiver) = mpsc::channel();
-                        type_receiver = Some(receiver);
-
-                        // send new username to all participants
-
-                        // TODO: idk even know add user type
-                        let mut message = message;
-                        message.vector_data.insert(0, b'2');
-                        session.broadcast_all(message);
-
-                        connection_type = ConnectionType::Unready;
-                        let connection = Connection {
-                            socket: socket.try_clone().unwrap(),
-                            connection_type: ConnectionType::Unready,
-                            type_sender: sender,
-                            username,
-                        };
-                        session.connections.push(connection);
-
-                        // send all usernames
-                        let usernames = session.usernames(); //session.usernames.join("\n");
-                        let message = Message::new_joining(session_code, &usernames);
-                        message.send(&mut socket).unwrap();
-                    }
-                    None => {
-                        let message = Message::new_joining(-1, "");
-                        message.send(&mut socket).unwrap();
-                    }
-                }
-            }
-
-            MessageType::MergeUnready => {
-                if connection_type != ConnectionType::Host {
-                    return;
-                }
-
-                let mut sessions = sessions.lock().unwrap();
-                let session = sessions
-                    .get_mut(&session_code)
-                    .expect("should contain a session");
-
-                // change all unready to participants
-                for connection in &mut session.connections {
+                for (_, connection) in &mut session.connections {
                     if connection.connection_type == ConnectionType::Unready {
                         connection.connection_type = ConnectionType::Participant;
-                        let _ = connection.type_sender.send(ConnectionType::Participant);
                     }
                 }
             }
 
-            MessageType::SessionExit => {
+            Packet::SessionExit => {
+                let mut session = session.lock().unwrap();
+
+                let packet = Packet::SessionEnd;
+                session.broadcast_all(packet);
+
                 let mut sessions = sessions.lock().unwrap();
-                let session = sessions
-                    .get_mut(&session_code)
-                    .expect("should contain a session");
-
-                match connection_type {
-                    ConnectionType::Host => {
-                        let message = Message::new_session_end();
-                        session.broadcast_non_host(message);
-
-                        sessions.remove(&session_code);
-                        connection_type = ConnectionType::None;
-                    }
-
-                    _ => {
-                        // removing participant
-                        session.connections.retain(|conn| {
-                            conn.socket.peer_addr().unwrap() != socket.peer_addr().unwrap()
-                        });
-
-                        session.broadcast_all(message);
-
-                        let message = Message::new_session_end();
-                        message.send(&mut socket).unwrap();
-
-                        connection_type = ConnectionType::None;
-                    }
-                }
+                sessions.remove(&code);
+                break;
             }
 
-            MessageType::Shutdown => {
-                socket
-                    .shutdown(std::net::Shutdown::Both)
-                    .expect("Could not close socket.");
+            // TODO: implement this
+            Packet::RequestControl => {}
+
+            // TODO: implement this
+            Packet::DenyControl => {}
+
+            _ => (),
+        }
+    }
+}
+
+fn handle_participant(socket: &mut TcpStream, session: SharedSession, username: String) {
+    loop {
+        let packet = Packet::receive(socket).unwrap();
+
+        match packet {
+            Packet::Control { .. } => {
+                // TODO: only forward if user is a controller
+                let session = session.lock().unwrap();
+                packet.send(&mut session.host()).unwrap();
+            }
+
+            // TODO: implement this
+            Packet::RequestControl => {}
+
+            Packet::SessionExit => {
+                let mut session = session.lock().unwrap();
+                session.connections.remove(&username);
+
+                let user_update_packet = Packet::UserUpdate {
+                    user_type: UserType::Leaving,
+                    username: username.clone(),
+                };
+                session.broadcast_all(user_update_packet);
+
+                let session_exit = Packet::SessionExit;
+                session_exit.send(socket).unwrap();
 
                 break;
             }
 
-            MessageType::Screen => {
-                let mut sessions = sessions.lock().unwrap();
-                let session = sessions
-                    .get_mut(&session_code)
-                    .expect("should contain a session");
+            Packet::SessionEnd => break,
 
-                session.broadcast_participants(message);
+            _ => (),
+        }
+    }
+}
+
+fn handle_client(mut socket: TcpStream, sessions: SessionHashMap) {
+    let conn = rusqlite::Connection::open(DATABASE_FILE).unwrap();
+    let mut username: String;
+
+    loop {
+        loop {
+            let packet = Packet::receive(&mut socket).unwrap();
+
+            if packet == Packet::Shutdown {
+                socket
+                    .shutdown(std::net::Shutdown::Both)
+                    .expect("Could not close socket.");
+                return;
             }
 
-            _ => match connection_type {
-                ConnectionType::Host => {
-                    // forward the message to all participants
-                    let mut sessions = sessions.lock().unwrap();
-                    let session = sessions
-                        .get_mut(&session_code)
-                        .expect("should contain a session");
+            let result = login_or_register(packet, &mut socket, &conn);
+            if let Some(user) = result {
+                username = user;
+                break;
+            }
+        }
 
-                    session.broadcast_non_host(message);
+        loop {
+            let packet = Packet::receive(&mut socket).unwrap();
+
+            match packet {
+                Packet::SignOut => {
+                    username.clear();
+                    break;
                 }
 
-                _ => {
-                    // forward the message to the host
-                    let mut sessions = sessions.lock().unwrap();
-                    let session = sessions
-                        .get_mut(&session_code)
-                        .expect("should contain a session");
+                Packet::Host => {
+                    let mut sessions_guard = sessions.lock().unwrap();
+                    let code = generate_session_code(&sessions_guard);
 
-                    message.send(&mut session.host()).unwrap();
+                    let host_connection = Connection {
+                        socket: socket.try_clone().unwrap(),
+                        connection_type: ConnectionType::Host,
+                        user_type: UserType::Host,
+                    };
+
+                    let session =
+                        Arc::new(Mutex::new(Session::new(username.clone(), host_connection)));
+                    sessions_guard.insert(code, session.clone());
+
+                    // release the lock
+                    drop(sessions_guard);
+
+                    // send back the session code
+                    let success = ResultPacket::Success(format!("{}", code));
+                    success.send(&mut socket).unwrap();
+
+                    handle_host(&mut socket, session, sessions.clone(), code);
                 }
-            },
+
+                Packet::Join { code } => {
+                    let sessions = sessions.lock().unwrap();
+
+                    // check if the code exists
+                    if let Some(session) = sessions.get(&code) {
+                        let mut session_guard = session.lock().unwrap();
+
+                        let success = ResultPacket::Success("Joining".to_owned());
+                        success.send(&mut socket).unwrap();
+
+                        // send new username to all participants
+                        let packet = Packet::UserUpdate {
+                            user_type: UserType::Participant,
+                            username: username.clone(),
+                        };
+                        session_guard.broadcast_all(packet);
+
+                        // create connection
+                        let connection = Connection {
+                            socket: socket.try_clone().unwrap(),
+                            connection_type: ConnectionType::Unready,
+                            user_type: UserType::Participant,
+                        };
+                        session_guard
+                            .connections
+                            .insert(username.clone(), connection);
+
+                        // send all usernames
+                        for (username, connection) in &session_guard.connections {
+                            let username_packet = Packet::UserUpdate {
+                                user_type: connection.user_type,
+                                username: username.clone(),
+                            };
+                            username_packet.send(&mut socket).unwrap();
+                        }
+
+                        drop(session_guard);
+
+                        handle_participant(&mut socket, session.clone(), username.clone());
+                    } else {
+                        // no such session
+                        let failure =
+                            ResultPacket::Failure(format!("No session found with code {}", code));
+                        failure.send(&mut socket).unwrap();
+                    }
+                }
+
+                _ => (),
+            }
         }
     }
 }
 
 fn main() {
-    // TODO: create database
     let conn = rusqlite::Connection::open(DATABASE_FILE).unwrap();
     conn.execute(
         "CREATE TABLE IF NOT EXISTS users(
@@ -352,7 +353,7 @@ fn main() {
 
     let listener = TcpListener::bind("0.0.0.0:7643").expect("Could not bind listener");
 
-    let sessions: Arc<Mutex<HashMap<i32, Session>>> = Arc::new(Mutex::new(HashMap::new()));
+    let sessions: SessionHashMap = Arc::new(Mutex::new(HashMap::new()));
 
     for connection in listener.incoming() {
         match connection {

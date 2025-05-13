@@ -4,11 +4,12 @@ use h264_reader::{
     nal::{Nal, RefNal, UnitType},
     push::NalInterest,
 };
-use remote_desktop::{protocol::MessageType, users_list, AppData, Scene, SceneChange};
+use remote_desktop::{protocol::ControlPayload, users_list, AppData, Scene, SceneChange, UserType};
 
 use eframe::egui::PointerButton;
-use remote_desktop::protocol::Message;
+use remote_desktop::protocol::Packet;
 use std::{
+    collections::HashMap,
     io::Read,
     net::TcpStream,
     process::{Child, ChildStdout, Command, Stdio},
@@ -17,7 +18,6 @@ use std::{
         Arc, Mutex,
     },
     thread::{self, JoinHandle},
-    time::Duration,
 };
 use winapi::um::winuser::{
     self, SendInput, INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, MOUSEINPUT, WHEEL_DELTA,
@@ -81,8 +81,8 @@ fn thread_send_screen(
 
             // SPS means that a keyframe is on its way
             if nal_type == UnitType::SeqParameterSet {
-                let message = Message::new_merge_unready();
-                message.send(&mut socket).unwrap();
+                let merge_unready = Packet::MergeUnready;
+                merge_unready.send(&mut socket).unwrap();
             }
 
             // sending the NAL (with the start)
@@ -91,8 +91,8 @@ fn thread_send_screen(
                 .read_to_end(&mut nal_bytes)
                 .expect("should be able to read NAL");
 
-            let message = Message::new_screen(nal_bytes);
-            message.send(&mut socket).unwrap();
+            let screen_packet = Packet::Screen { bytes: nal_bytes };
+            screen_packet.send(&mut socket).unwrap();
 
             NalInterest::Ignore
         });
@@ -116,69 +116,53 @@ fn thread_send_screen(
 
 fn thread_read_socket(
     mut socket: TcpStream,
-    stop_flag: Arc<AtomicBool>,
-    usernames: Arc<Mutex<Vec<String>>>,
+    usernames: Arc<Mutex<HashMap<String, UserType>>>,
 ) -> JoinHandle<()> {
-    thread::spawn(move || {
-        socket
-            .set_read_timeout(Some(Duration::from_millis(100)))
-            .unwrap();
+    thread::spawn(move || loop {
+        let packet = Packet::receive(&mut socket).unwrap_or_default();
 
-        while !stop_flag.load(Ordering::Relaxed) {
-            let message = Message::receive(&mut socket).unwrap_or_default();
-
-            match message.message_type {
-                MessageType::Joining => {
-                    let mut usernames = usernames.lock().unwrap();
-                    usernames.push(
-                        String::from_utf8(message.vector_data).expect("bytes should be utf8"),
-                    );
+        match packet {
+            Packet::UserUpdate {
+                user_type,
+                username,
+            } => {
+                let mut usernames = usernames.lock().unwrap();
+                if user_type == UserType::Leaving {
+                    usernames.remove(&username);
+                } else {
+                    usernames.insert(username, user_type);
                 }
-
-                MessageType::SessionExit => {
-                    // remove username from usernames
-                    let mut usernames = usernames.lock().unwrap();
-                    let username =
-                        String::from_utf8(message.vector_data).expect("bytes should be utf8");
-
-                    usernames.retain(|name| name[1..] != username);
-                }
-
-                MessageType::MouseClick => {
-                    send_mouse_click(
-                        message.mouse_position,
-                        message.mouse_button,
-                        message.pressed,
-                    );
-                }
-
-                MessageType::MouseMove => {
-                    send_mouse_move(message.mouse_position);
-                }
-
-                MessageType::Scroll => {
-                    send_scroll(message.general_data);
-                }
-
-                MessageType::Keyboard => {
-                    send_key(message.key, message.pressed);
-                }
-
-                _ => (),
             }
-        }
 
-        socket.set_read_timeout(None).unwrap();
+            Packet::Control { payload } => match payload {
+                ControlPayload::MouseMove { mouse_x, mouse_y } => send_mouse_move(mouse_x, mouse_y),
+
+                ControlPayload::MouseClick {
+                    mouse_x,
+                    mouse_y,
+                    pressed,
+                    button,
+                } => send_mouse_click(mouse_x, mouse_y, button, pressed),
+
+                ControlPayload::Keyboard { pressed, key } => send_key(key, pressed),
+
+                ControlPayload::Scroll { delta } => send_scroll(delta),
+            },
+
+            Packet::SessionEnd => break,
+
+            _ => (),
+        }
     })
 }
 
-fn send_mouse_move(mouse_position: (i32, i32)) {
+fn send_mouse_move(mouse_x: u32, mouse_y: u32) {
     unsafe {
         let mut move_input: INPUT = std::mem::zeroed();
         move_input.type_ = INPUT_MOUSE;
         *move_input.u.mi_mut() = MOUSEINPUT {
-            dx: mouse_position.0,
-            dy: mouse_position.1,
+            dx: mouse_x as i32,
+            dy: mouse_y as i32,
             mouseData: 0,
             dwFlags: winuser::MOUSEEVENTF_ABSOLUTE | winuser::MOUSEEVENTF_MOVE,
             time: 0,
@@ -194,7 +178,7 @@ fn send_mouse_move(mouse_position: (i32, i32)) {
     }
 }
 
-fn send_mouse_click(mouse_position: (i32, i32), button: PointerButton, pressed: bool) {
+fn send_mouse_click(mouse_x: u32, mouse_y: u32, button: PointerButton, pressed: bool) {
     unsafe {
         let mut flags: u32 = winuser::MOUSEEVENTF_ABSOLUTE | winuser::MOUSEEVENTF_MOVE;
         if button == PointerButton::Primary {
@@ -221,8 +205,8 @@ fn send_mouse_click(mouse_position: (i32, i32), button: PointerButton, pressed: 
 
         click_up_input.type_ = INPUT_MOUSE;
         *click_up_input.u.mi_mut() = MOUSEINPUT {
-            dx: mouse_position.0,
-            dy: mouse_position.1,
+            dx: mouse_x as i32,
+            dy: mouse_y as i32,
             mouseData: 0,
             dwFlags: flags,
             time: 0,
@@ -282,9 +266,9 @@ fn send_key(key: u16, pressed: bool) {
 }
 
 pub struct HostScene {
-    session_code: i32,
+    session_code: String,
     stop_flag: Arc<AtomicBool>,
-    usernames: Arc<Mutex<Vec<String>>>,
+    usernames: Arc<Mutex<HashMap<String, UserType>>>,
     username: String,
     ffmpeg_command: Child,
     thread_send_screen: Option<JoinHandle<()>>,
@@ -292,7 +276,7 @@ pub struct HostScene {
 }
 
 impl HostScene {
-    pub fn new(session_code: i32, app_data: &mut AppData, username: String) -> Self {
+    pub fn new(session_code: String, app_data: &mut AppData, username: String) -> Self {
         let mut command = start_ffmpeg();
         let stdout = command.stdout.take().unwrap();
 
@@ -303,13 +287,11 @@ impl HostScene {
         let thread_send_screen =
             thread_send_screen(socket.try_clone().unwrap(), stdout, stop_flag.clone());
 
-        let usernames = Arc::new(Mutex::new(vec![1.to_string() + &username]));
+        let mut usernames_types = HashMap::new();
+        usernames_types.insert(username.clone(), UserType::Host);
+        let usernames = Arc::new(Mutex::new(usernames_types));
 
-        let thread_read_socket = thread_read_socket(
-            socket.try_clone().unwrap(),
-            stop_flag.clone(),
-            usernames.clone(),
-        );
+        let thread_read_socket = thread_read_socket(socket.try_clone().unwrap(), usernames.clone());
 
         Self {
             session_code,
@@ -326,11 +308,12 @@ impl HostScene {
         self.stop_flag.store(true, Ordering::Relaxed);
 
         let _ = self.thread_send_screen.take().unwrap().join();
-        let _ = self.thread_read_socket.take().unwrap().join();
         let _ = self.ffmpeg_command.kill();
 
-        let message = Message::new_session_exit(&self.username);
-        message.send(socket).unwrap();
+        let session_exit = Packet::SessionExit;
+        session_exit.send(socket).unwrap();
+
+        let _ = self.thread_read_socket.take().unwrap().join();
 
         SceneChange::To(Box::new(MenuScene::new(self.username.clone())))
     }
@@ -359,8 +342,11 @@ impl Scene for HostScene {
 
         self.disconnect(socket);
 
-        let message = Message::new_shutdown();
-        message.send(socket).unwrap();
+        let signout_packet = Packet::SignOut;
+        signout_packet.send(socket).unwrap();
+
+        let shutdown_packet = Packet::Shutdown;
+        shutdown_packet.send(socket).unwrap();
 
         socket
             .shutdown(std::net::Shutdown::Both)

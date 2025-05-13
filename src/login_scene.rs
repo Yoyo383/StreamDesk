@@ -2,7 +2,7 @@ use std::{net::TcpStream, sync::mpsc::Receiver};
 
 use eframe::egui::{self, Align, Color32, FontId, Layout, RichText, TextEdit};
 use remote_desktop::{
-    protocol::{Message, MessageType},
+    protocol::{Packet, ResultPacket},
     AppData, Scene, SceneChange,
 };
 
@@ -35,43 +35,45 @@ impl LoginScene {
     fn login(&mut self, socket: &mut TcpStream) -> Option<SceneChange> {
         let password = format!("{:x}", md5::compute(self.password.clone()));
 
-        let message = Message::new_login(&self.username, &password);
-        message.send(socket).unwrap();
+        let login_packet = Packet::Login {
+            username: self.username.clone(),
+            password,
+        };
+        login_packet.send(socket).unwrap();
 
-        let message = Message::receive(socket).unwrap();
+        let result = ResultPacket::receive(socket).unwrap();
+        match result {
+            ResultPacket::Failure(msg) => {
+                self.error_message = msg;
+                None
+            }
 
-        if message.message_type == MessageType::Login {
-            return Some(SceneChange::To(Box::new(MenuScene::new(
+            ResultPacket::Success(_) => Some(SceneChange::To(Box::new(MenuScene::new(
                 self.username.clone(),
-            ))));
+            )))),
         }
-
-        if message.message_type == MessageType::None {
-            self.error_message = "Username or password are incorrect.".to_owned();
-        }
-
-        None
     }
 
     fn register(&mut self, socket: &mut TcpStream) -> Option<SceneChange> {
         let password = format!("{:x}", md5::compute(self.password.clone()));
 
-        let message = Message::new_register(&self.username, &password);
-        message.send(socket).unwrap();
+        let register_packet = Packet::Register {
+            username: self.username.clone(),
+            password,
+        };
+        register_packet.send(socket).unwrap();
 
-        let message = Message::receive(socket).unwrap();
+        let result = ResultPacket::receive(socket).unwrap();
+        match result {
+            ResultPacket::Failure(msg) => {
+                self.error_message = msg;
+                None
+            }
 
-        if message.message_type == MessageType::Register {
-            return Some(SceneChange::To(Box::new(MenuScene::new(
+            ResultPacket::Success(_) => Some(SceneChange::To(Box::new(MenuScene::new(
                 self.username.clone(),
-            ))));
+            )))),
         }
-
-        if message.message_type == MessageType::None {
-            self.error_message = "Username already taken.".to_owned();
-        }
-
-        None
     }
 }
 
@@ -161,8 +163,8 @@ impl Scene for LoginScene {
     fn on_exit(&mut self, app_data: &mut AppData) {
         let socket = app_data.socket.as_mut().unwrap();
 
-        let message = Message::new_shutdown();
-        message.send(socket).unwrap();
+        let shutdown_packet = Packet::Shutdown;
+        shutdown_packet.send(socket).unwrap();
 
         socket
             .shutdown(std::net::Shutdown::Both)

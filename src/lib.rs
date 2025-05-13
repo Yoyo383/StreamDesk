@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     net::TcpStream,
     sync::{Arc, Mutex},
 };
@@ -99,26 +100,27 @@ pub fn egui_key_to_vk(key: &Key) -> Option<u16> {
     })
 }
 
-pub fn normalize_mouse_position(mouse_position: Pos2, image_rect: Rect) -> (i32, i32) {
+pub fn normalize_mouse_position(mouse_position: Pos2, image_rect: Rect) -> (u32, u32) {
     let x = (mouse_position.x - image_rect.left()) * 65535.0 / image_rect.width();
     let y = (mouse_position.y - image_rect.top()) * 65535.0 / image_rect.height();
-    (x as i32, y as i32)
+    (x as u32, y as u32)
 }
 
-pub fn users_list(ui: &mut Ui, usernames: Arc<Mutex<Vec<String>>>, username: String) {
+pub fn users_list(ui: &mut Ui, usernames: Arc<Mutex<HashMap<String, UserType>>>, username: String) {
     let usernames = usernames.lock().unwrap();
 
-    let hosts: Vec<String> = usernames
-        .iter()
-        .filter(|s| s.starts_with('1'))
-        .map(|s| s[1..].to_string())
-        .collect();
+    let mut hosts = Vec::new();
+    let mut controllers = Vec::new();
+    let mut participants = Vec::new();
 
-    let participants: Vec<String> = usernames
-        .iter()
-        .filter(|s| s.starts_with('2'))
-        .map(|s| s[1..].to_string())
-        .collect();
+    for (username, user_type) in usernames.iter() {
+        match user_type {
+            UserType::Host => hosts.push(username.clone()),
+            UserType::Controller => controllers.push(username.clone()),
+            UserType::Participant => participants.push(username.clone()),
+            _ => (),
+        }
+    }
 
     ui.heading("Host");
     for host in hosts.iter() {
@@ -126,6 +128,19 @@ pub fn users_list(ui: &mut Ui, usernames: Arc<Mutex<Vec<String>>>, username: Str
             ui.label(format!("{} (You)", host));
         } else {
             ui.label(host);
+        }
+    }
+
+    if controllers.len() > 0 {
+        ui.add_space(10.0);
+
+        ui.heading("Controller");
+        for controller in controllers.iter() {
+            if *controller == username {
+                ui.label(format!("{} (You)", controller));
+            } else {
+                ui.label(controller);
+            }
         }
     }
 
@@ -155,4 +170,13 @@ pub enum SceneChange {
 pub trait Scene {
     fn update(&mut self, ctx: &egui::Context, app_data: &mut AppData) -> Option<SceneChange>;
     fn on_exit(&mut self, app_data: &mut AppData);
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum UserType {
+    Leaving,
+    Host,
+    Controller,
+    Participant,
 }

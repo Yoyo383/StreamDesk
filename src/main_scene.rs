@@ -1,13 +1,12 @@
 use eframe::egui::{self, pos2, Color32, Rect, Sense, Stroke, Ui, Vec2};
+use remote_desktop::protocol::{ControlPayload, Packet};
 use remote_desktop::{
-    egui_key_to_vk, normalize_mouse_position,
-    protocol::{Message, MessageType},
-    users_list, AppData, Scene, SceneChange,
+    egui_key_to_vk, normalize_mouse_position, users_list, AppData, Scene, SceneChange, UserType,
 };
 
 use crate::{menu_scene::MenuScene, modifiers_state::ModifiersState};
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     io::{Read, Write},
     net::TcpStream,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
@@ -49,40 +48,39 @@ fn thread_receive_socket(
     mut socket: TcpStream,
     mut stdin: ChildStdin,
     stop_flag: Arc<AtomicBool>,
-    usernames: Arc<Mutex<Vec<String>>>,
+    usernames: Arc<Mutex<HashMap<String, UserType>>>,
 ) -> JoinHandle<()> {
-    thread::spawn(move || {
-        while !stop_flag.load(Ordering::Relaxed) {
-            let message = Message::receive(&mut socket).unwrap_or_default();
+    thread::spawn(move || loop {
+        let packet = Packet::receive(&mut socket).unwrap_or_default();
 
-            match message.message_type {
-                MessageType::Screen => {
-                    stdin.write_all(&message.vector_data).unwrap();
+        match packet {
+            Packet::Screen { bytes } => stdin.write_all(&bytes).unwrap(),
+
+            Packet::UserUpdate {
+                user_type,
+                username,
+            } => {
+                let mut usernames = usernames.lock().unwrap();
+                if user_type == UserType::Leaving {
+                    usernames.remove(&username);
+                } else {
+                    usernames.insert(username, user_type);
                 }
-
-                MessageType::Joining => {
-                    let mut usernames = usernames.lock().unwrap();
-                    usernames.push(
-                        String::from_utf8(message.vector_data).expect("bytes should be utf8"),
-                    );
-                }
-
-                MessageType::SessionExit => {
-                    // remove username from usernames
-                    let username =
-                        String::from_utf8(message.vector_data).expect("bytes should be utf8");
-
-                    let mut usernames = usernames.lock().unwrap();
-                    usernames.retain(|name| name[1..] != username);
-                }
-
-                MessageType::SessionEnd => {
-                    // signal all threads
-                    stop_flag.store(true, Ordering::Relaxed);
-                }
-
-                _ => {}
             }
+
+            Packet::SessionExit => {
+                // signal all threads
+                stop_flag.store(true, Ordering::Relaxed);
+                break;
+            }
+
+            Packet::SessionEnd => {
+                stop_flag.store(true, Ordering::Relaxed);
+                packet.send(&mut socket).unwrap();
+                break;
+            }
+
+            _ => (),
         }
     })
 }
@@ -115,7 +113,7 @@ pub struct MainScene {
     modifiers_state: ModifiersState,
     stop_flag: Arc<AtomicBool>,
     image_rect: Rect,
-    usernames: Arc<Mutex<Vec<String>>>,
+    usernames: Arc<Mutex<HashMap<String, UserType>>>,
     username: String,
     thread_receive_socket: Option<JoinHandle<()>>,
     thread_read_decoded: Option<JoinHandle<()>>,
@@ -123,7 +121,7 @@ pub struct MainScene {
 }
 
 impl MainScene {
-    pub fn new(app_data: &mut AppData, usernames: Vec<String>, username: String) -> Self {
+    pub fn new(app_data: &mut AppData, username: String) -> Self {
         let mut ffmpeg = start_ffmpeg();
         let stdin = ffmpeg.stdin.take().unwrap();
         let stdout = ffmpeg.stdout.take().unwrap();
@@ -133,7 +131,7 @@ impl MainScene {
 
         let stop_flag = Arc::new(AtomicBool::new(false));
 
-        let usernames = Arc::new(Mutex::new(usernames));
+        let usernames = Arc::new(Mutex::new(HashMap::new()));
 
         let thread_receive_socket = thread_receive_socket(
             app_data.socket.as_mut().unwrap().try_clone().unwrap(),
@@ -168,8 +166,13 @@ impl MainScene {
         let socket = app_data.socket.as_mut().unwrap();
 
         for key in &self.modifiers_state.keys {
-            let message = Message::new_keyboard(key.key, key.pressed);
-            message.send(socket).unwrap();
+            let key_packet = Packet::Control {
+                payload: ControlPayload::Keyboard {
+                    pressed: key.pressed,
+                    key: key.key,
+                },
+            };
+            key_packet.send(socket).unwrap();
         }
 
         for event in &input.events {
@@ -180,10 +183,17 @@ impl MainScene {
                     pressed,
                     ..
                 } => {
-                    let mouse_position = normalize_mouse_position(*pos, self.image_rect);
+                    let (mouse_x, mouse_y) = normalize_mouse_position(*pos, self.image_rect);
 
-                    let message = Message::new_mouse_click(*button, mouse_position, *pressed);
-                    message.send(socket).unwrap();
+                    let click_packet = Packet::Control {
+                        payload: ControlPayload::MouseClick {
+                            mouse_x,
+                            mouse_y,
+                            pressed: *pressed,
+                            button: *button,
+                        },
+                    };
+                    click_packet.send(socket).unwrap();
                 }
 
                 egui::Event::Key {
@@ -193,21 +203,33 @@ impl MainScene {
                 } => {
                     if let Some(key) = physical_key {
                         let vk = egui_key_to_vk(key).unwrap();
-                        let message = Message::new_keyboard(vk, *pressed);
-                        message.send(socket).unwrap();
+
+                        let key_packet = Packet::Control {
+                            payload: ControlPayload::Keyboard {
+                                pressed: *pressed,
+                                key: vk,
+                            },
+                        };
+                        key_packet.send(socket).unwrap();
                     }
                 }
 
                 egui::Event::PointerMoved(new_pos) => {
-                    let mouse_position = normalize_mouse_position(*new_pos, self.image_rect);
+                    let (mouse_x, mouse_y) = normalize_mouse_position(*new_pos, self.image_rect);
 
-                    let message = Message::new_mouse_move(mouse_position);
-                    message.send(socket).unwrap();
+                    let mouse_move_packet = Packet::Control {
+                        payload: ControlPayload::MouseMove { mouse_x, mouse_y },
+                    };
+                    mouse_move_packet.send(socket).unwrap();
                 }
 
                 egui::Event::MouseWheel { delta, .. } => {
-                    let message = Message::new_scroll(delta.y.signum());
-                    message.send(socket).unwrap();
+                    let scroll_packet = Packet::Control {
+                        payload: ControlPayload::Scroll {
+                            delta: delta.y.signum() as i32,
+                        },
+                    };
+                    scroll_packet.send(socket).unwrap();
                 }
 
                 _ => (),
@@ -258,10 +280,10 @@ impl MainScene {
     }
 
     fn disconnect(&mut self, socket: &mut TcpStream) -> SceneChange {
-        let message = Message::new_session_exit(&self.username);
-        message.send(socket).unwrap();
+        let session_exit = Packet::SessionExit;
+        session_exit.send(socket).unwrap();
 
-        self.stop_flag.store(true, Ordering::Relaxed);
+        // self.stop_flag.store(true, Ordering::Relaxed);
 
         let _ = self.thread_receive_socket.take().unwrap().join();
         let _ = self.thread_read_decoded.take().unwrap().join();
@@ -326,8 +348,11 @@ impl Scene for MainScene {
 
         self.disconnect(socket);
 
-        let message = Message::new_shutdown();
-        message.send(socket).unwrap();
+        let signout_packet = Packet::SignOut;
+        signout_packet.send(socket).unwrap();
+
+        let shutdown_packet = Packet::Shutdown;
+        shutdown_packet.send(socket).unwrap();
 
         socket
             .shutdown(std::net::Shutdown::Both)
