@@ -106,7 +106,18 @@ pub fn normalize_mouse_position(mouse_position: Pos2, image_rect: Rect) -> (u32,
     (x as u32, y as u32)
 }
 
-pub fn users_list(ui: &mut Ui, usernames: Arc<Mutex<HashMap<String, UserType>>>, username: String) {
+/// Displays the users list.
+/// If it's displayed in the host, there's a "Revoke Control" button next to the controller.
+///
+/// Returns `Some(controller username)` if the "Revoke Control" button has been pressed. Otherwise returns `None`.
+pub fn users_list(
+    ui: &mut Ui,
+    usernames: Arc<Mutex<HashMap<String, UserType>>>,
+    username: String,
+    is_host: bool,
+) -> Option<String> {
+    let mut result: Option<String> = None;
+
     let usernames = usernames.lock().unwrap();
 
     let mut hosts = Vec::new();
@@ -136,11 +147,19 @@ pub fn users_list(ui: &mut Ui, usernames: Arc<Mutex<HashMap<String, UserType>>>,
 
         ui.heading("Controller");
         for controller in controllers.iter() {
-            if *controller == username {
-                ui.label(format!("{} (You)", controller));
-            } else {
-                ui.label(controller);
-            }
+            ui.horizontal(|ui| {
+                if *controller == username {
+                    ui.label(format!("{} (You)", controller));
+                } else {
+                    ui.label(controller);
+                }
+
+                if is_host {
+                    if ui.button("Revoke Control").clicked() {
+                        result = Some(controller.clone());
+                    }
+                }
+            });
         }
     }
 
@@ -156,6 +175,8 @@ pub fn users_list(ui: &mut Ui, usernames: Arc<Mutex<HashMap<String, UserType>>>,
             }
         }
     }
+
+    result
 }
 
 pub struct AppData {

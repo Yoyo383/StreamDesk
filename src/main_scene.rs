@@ -18,6 +18,10 @@ use std::{
     time::Instant,
 };
 
+const REQUEST_CONTROL_MSG: &'static str = "Request Control";
+const WAITING_CONTROL_MSG: &'static str = "Waiting for response...";
+const CONTROLLING_MSG: &'static str = "You're the controller!";
+
 fn start_ffmpeg() -> Child {
     let ffmpeg = Command::new("ffmpeg")
         .args([
@@ -49,6 +53,7 @@ fn thread_receive_socket(
     mut stdin: ChildStdin,
     stop_flag: Arc<AtomicBool>,
     usernames: Arc<Mutex<HashMap<String, UserType>>>,
+    control_msg: Arc<Mutex<String>>,
 ) -> JoinHandle<()> {
     thread::spawn(move || loop {
         let packet = Packet::receive(&mut socket).unwrap_or_default();
@@ -66,6 +71,18 @@ fn thread_receive_socket(
                 } else {
                     usernames.insert(username, user_type);
                 }
+            }
+
+            Packet::RequestControl { .. } => {
+                let mut control_msg = control_msg.lock().unwrap();
+                control_msg.clear();
+                control_msg.push_str(CONTROLLING_MSG);
+            }
+
+            Packet::DenyControl { .. } => {
+                let mut control_msg = control_msg.lock().unwrap();
+                control_msg.clear();
+                control_msg.push_str(REQUEST_CONTROL_MSG);
             }
 
             Packet::SessionExit => {
@@ -108,13 +125,18 @@ fn thread_read_decoded(
 pub struct MainScene {
     now: Instant,
     elapsed_time: f32,
+
     frame_queue: Arc<Mutex<VecDeque<Vec<u8>>>>,
     current_frame: Vec<u8>,
+
     modifiers_state: ModifiersState,
     stop_flag: Arc<AtomicBool>,
     image_rect: Rect,
+
     usernames: Arc<Mutex<HashMap<String, UserType>>>,
     username: String,
+    control_msg: Arc<Mutex<String>>,
+
     thread_receive_socket: Option<JoinHandle<()>>,
     thread_read_decoded: Option<JoinHandle<()>>,
     ffmpeg_command: Child,
@@ -132,28 +154,35 @@ impl MainScene {
         let stop_flag = Arc::new(AtomicBool::new(false));
 
         let usernames = Arc::new(Mutex::new(HashMap::new()));
+        let control_msg = Arc::new(Mutex::new("Request Control".to_owned()));
 
         let thread_receive_socket = thread_receive_socket(
             app_data.socket.as_mut().unwrap().try_clone().unwrap(),
             stdin,
             stop_flag.clone(),
             usernames.clone(),
+            control_msg.clone(),
         );
         let thread_read_decoded = thread_read_decoded(frame_queue_clone, stdout, stop_flag.clone());
 
         Self {
             now: Instant::now(),
             elapsed_time: 0.,
+
             frame_queue,
             current_frame: vec![0u8; 1920 * 1080 * 4],
+
             modifiers_state: ModifiersState::new(),
             stop_flag,
             image_rect: Rect {
                 min: pos2(0.0, 0.0),
                 max: pos2(0.0, 0.0),
             },
+
             usernames,
             username,
+            control_msg,
+
             thread_receive_socket: Some(thread_receive_socket),
             thread_read_decoded: Some(thread_read_decoded),
             ffmpeg_command: ffmpeg,
@@ -271,7 +300,8 @@ impl MainScene {
         ui.painter()
             .rect_stroke(centered_rect, 0.0, stroke, egui::StrokeKind::Outside);
 
-        if response.hovered() {
+        // make sure the user is the controller before handling input
+        if response.hovered() && self.control_msg.lock().unwrap().as_str() == CONTROLLING_MSG {
             ui.ctx().memory_mut(|mem| mem.request_focus(egui::Id::NULL));
             ui.input(|input| self.handle_input(input, app_data));
         }
@@ -323,15 +353,35 @@ impl Scene for MainScene {
             ui.heading("Participants");
             ui.separator();
 
-            users_list(ui, self.usernames.clone(), self.username.clone());
+            users_list(ui, self.usernames.clone(), self.username.clone(), false);
         });
 
-        egui::TopBottomPanel::bottom("disconnect_panel")
+        egui::TopBottomPanel::bottom("bottom_panel")
             .resizable(false)
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
                     if ui.button("Disconnect").clicked() {
                         result = Some(self.disconnect(app_data.socket.as_mut().unwrap()));
+                    }
+
+                    let mut control_msg = self.control_msg.lock().unwrap();
+
+                    if ui
+                        .add_enabled(
+                            control_msg.as_str() == REQUEST_CONTROL_MSG,
+                            |ui: &mut Ui| ui.button(control_msg.as_str()),
+                        )
+                        .clicked()
+                    {
+                        control_msg.clear();
+                        control_msg.push_str(WAITING_CONTROL_MSG);
+
+                        let request_control = Packet::RequestControl {
+                            username: self.username.clone(),
+                        };
+                        request_control
+                            .send(app_data.socket.as_mut().unwrap())
+                            .unwrap();
                     }
                 });
             });

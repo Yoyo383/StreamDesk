@@ -182,11 +182,37 @@ fn handle_host(
                 break;
             }
 
-            // TODO: implement this
-            Packet::RequestControl => {}
+            Packet::RequestControl { ref username } => {
+                let mut session = session.lock().unwrap();
+                if let Some(user_connection) = session.connections.get_mut(username) {
+                    user_connection.connection_type = ConnectionType::Controller;
+                    user_connection.user_type = UserType::Controller;
+                    packet.send(&mut user_connection.socket).unwrap();
 
-            // TODO: implement this
-            Packet::DenyControl => {}
+                    // notify all users
+                    let user_update = Packet::UserUpdate {
+                        user_type: UserType::Controller,
+                        username: username.to_string(),
+                    };
+                    session.broadcast_all(user_update);
+                }
+            }
+
+            Packet::DenyControl { ref username } => {
+                let mut session = session.lock().unwrap();
+                if let Some(user_connection) = session.connections.get_mut(username) {
+                    user_connection.connection_type = ConnectionType::Participant;
+                    user_connection.user_type = UserType::Participant;
+                    packet.send(&mut user_connection.socket).unwrap();
+
+                    // notify all users
+                    let user_update = Packet::UserUpdate {
+                        user_type: UserType::Participant,
+                        username: username.to_string(),
+                    };
+                    session.broadcast_all(user_update);
+                }
+            }
 
             _ => (),
         }
@@ -199,13 +225,31 @@ fn handle_participant(socket: &mut TcpStream, session: SharedSession, username: 
 
         match packet {
             Packet::Control { .. } => {
-                // TODO: only forward if user is a controller
                 let session = session.lock().unwrap();
-                packet.send(&mut session.host()).unwrap();
+
+                if session.connections.get(&username).unwrap().connection_type
+                    == ConnectionType::Controller
+                {
+                    packet.send(&mut session.host()).unwrap();
+                }
             }
 
-            // TODO: implement this
-            Packet::RequestControl => {}
+            Packet::RequestControl { .. } => {
+                let session = session.lock().unwrap();
+
+                // can send to host only if participant, not unready
+                if session.connections.get(&username).unwrap().connection_type
+                    == ConnectionType::Participant
+                {
+                    packet.send(&mut session.host()).unwrap();
+                } else {
+                    // send DenyRequest because not participant
+                    let deny_packet = Packet::DenyControl {
+                        username: username.clone(),
+                    };
+                    deny_packet.send(socket).unwrap();
+                }
+            }
 
             Packet::SessionExit => {
                 let mut session = session.lock().unwrap();
@@ -290,6 +334,10 @@ fn handle_client(mut socket: TcpStream, sessions: SessionHashMap) {
 
                     // check if the code exists
                     if let Some(session) = sessions.get(&code) {
+                        // cloning so i can drop sessions and unlock the mutex
+                        let session = session.clone();
+                        drop(sessions);
+
                         let mut session_guard = session.lock().unwrap();
 
                         let success = ResultPacket::Success("Joining".to_owned());

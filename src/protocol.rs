@@ -35,6 +35,11 @@ fn read_length_and_data(socket: &mut TcpStream) -> std::io::Result<Vec<u8>> {
     Ok(data)
 }
 
+fn write_length_and_string(bytes: &mut Vec<u8>, string: &str) {
+    bytes.extend_from_slice(&(string.len() as u32).to_be_bytes());
+    bytes.extend_from_slice(string.as_bytes());
+}
+
 pub enum ResultPacket {
     Failure(String),
     Success(String),
@@ -46,16 +51,14 @@ impl ResultPacket {
         match self {
             ResultPacket::Failure(msg) => {
                 let mut result = vec![0u8];
-                result.extend_from_slice(&(msg.len() as u32).to_be_bytes());
-                result.extend_from_slice(msg.as_bytes());
+                write_length_and_string(&mut result, msg);
 
                 result
             }
 
             ResultPacket::Success(msg) => {
                 let mut result = vec![1u8];
-                result.extend_from_slice(&(msg.len() as u32).to_be_bytes());
-                result.extend_from_slice(msg.as_bytes());
+                write_length_and_string(&mut result, msg);
 
                 result
             }
@@ -126,9 +129,13 @@ pub enum Packet {
 
     SessionExit,
 
-    RequestControl,
+    RequestControl {
+        username: String,
+    },
 
-    DenyControl,
+    DenyControl {
+        username: String,
+    },
 
     SignOut,
 
@@ -150,21 +157,15 @@ impl Packet {
             Packet::Login { username, password } => {
                 result.push(1);
 
-                result.extend_from_slice(&(username.len() as u32).to_be_bytes());
-                result.extend_from_slice(username.as_bytes());
-
-                result.extend_from_slice(&(password.len() as u32).to_be_bytes());
-                result.extend_from_slice(password.as_bytes());
+                write_length_and_string(&mut result, &username);
+                write_length_and_string(&mut result, &password);
             }
 
             Packet::Register { username, password } => {
                 result.push(2);
 
-                result.extend_from_slice(&(username.len() as u32).to_be_bytes());
-                result.extend_from_slice(username.as_bytes());
-
-                result.extend_from_slice(&(password.len() as u32).to_be_bytes());
-                result.extend_from_slice(password.as_bytes());
+                write_length_and_string(&mut result, &username);
+                write_length_and_string(&mut result, &password);
             }
 
             Packet::Host => {
@@ -184,8 +185,7 @@ impl Packet {
                 result.push(5);
 
                 result.push(*user_type as u8);
-                result.extend_from_slice(&(username.len() as u32).to_be_bytes());
-                result.extend_from_slice(username.as_bytes());
+                write_length_and_string(&mut result, &username);
             }
 
             Packet::Control { payload } => {
@@ -209,12 +209,16 @@ impl Packet {
                 result.push(9);
             }
 
-            Packet::RequestControl => {
+            Packet::RequestControl { username } => {
                 result.push(10);
+
+                write_length_and_string(&mut result, &username);
             }
 
-            Packet::DenyControl => {
+            Packet::DenyControl { username } => {
                 result.push(11);
+
+                write_length_and_string(&mut result, &username);
             }
 
             Packet::SignOut => {
@@ -333,10 +337,18 @@ impl Packet {
             9 => Ok(Self::SessionExit),
 
             // RequestControl
-            10 => Ok(Self::RequestControl),
+            10 => {
+                let username = String::from_utf8(read_length_and_data(socket)?)
+                    .expect("bytes should be valid utf8.");
+                Ok(Self::RequestControl { username })
+            }
 
             // DenyControl
-            11 => Ok(Self::DenyControl),
+            11 => {
+                let username = String::from_utf8(read_length_and_data(socket)?)
+                    .expect("bytes should be valid utf8.");
+                Ok(Self::DenyControl { username })
+            }
 
             // SignOut
             12 => Ok(Self::SignOut),

@@ -103,7 +103,7 @@ impl Scene for MenuScene {
                         result = Some(SceneChange::To(Box::new(LoginScene::new(None, true))));
                     }
 
-                    ui.label(RichText::new(format!("Username: {}", self.username)).size(20.0));
+                    ui.label(RichText::new(format!("Welcome, {}", self.username)).size(20.0));
                 });
 
                 ui.add_space(10.0);

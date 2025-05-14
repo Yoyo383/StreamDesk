@@ -9,7 +9,7 @@ use remote_desktop::{protocol::ControlPayload, users_list, AppData, Scene, Scene
 use eframe::egui::PointerButton;
 use remote_desktop::protocol::Packet;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::Read,
     net::TcpStream,
     process::{Child, ChildStdout, Command, Stdio},
@@ -117,6 +117,7 @@ fn thread_send_screen(
 fn thread_read_socket(
     mut socket: TcpStream,
     usernames: Arc<Mutex<HashMap<String, UserType>>>,
+    requesting_control: Arc<Mutex<HashSet<String>>>,
 ) -> JoinHandle<()> {
     thread::spawn(move || loop {
         let packet = Packet::receive(&mut socket).unwrap_or_default();
@@ -148,6 +149,11 @@ fn thread_read_socket(
 
                 ControlPayload::Scroll { delta } => send_scroll(delta),
             },
+
+            Packet::RequestControl { username } => {
+                let mut requesting_control = requesting_control.lock().unwrap();
+                requesting_control.insert(username);
+            }
 
             Packet::SessionEnd => break,
 
@@ -268,8 +274,11 @@ fn send_key(key: u16, pressed: bool) {
 pub struct HostScene {
     session_code: String,
     stop_flag: Arc<AtomicBool>,
+
     usernames: Arc<Mutex<HashMap<String, UserType>>>,
     username: String,
+    requesting_control: Arc<Mutex<HashSet<String>>>,
+
     ffmpeg_command: Child,
     thread_send_screen: Option<JoinHandle<()>>,
     thread_read_socket: Option<JoinHandle<()>>,
@@ -290,14 +299,22 @@ impl HostScene {
         let mut usernames_types = HashMap::new();
         usernames_types.insert(username.clone(), UserType::Host);
         let usernames = Arc::new(Mutex::new(usernames_types));
+        let requesting_control = Arc::new(Mutex::new(HashSet::new()));
 
-        let thread_read_socket = thread_read_socket(socket.try_clone().unwrap(), usernames.clone());
+        let thread_read_socket = thread_read_socket(
+            socket.try_clone().unwrap(),
+            usernames.clone(),
+            requesting_control.clone(),
+        );
 
         Self {
             session_code,
             stop_flag,
+
             usernames,
             username,
+            requesting_control,
+
             ffmpeg_command: command,
             thread_send_screen: Some(thread_send_screen),
             thread_read_socket: Some(thread_read_socket),
@@ -327,7 +344,79 @@ impl Scene for HostScene {
             ui.heading(format!("Hosting, code {}", self.session_code));
             ui.separator();
 
-            users_list(ui, self.usernames.clone(), self.username.clone());
+            if let Some(controller) =
+                users_list(ui, self.usernames.clone(), self.username.clone(), true)
+            {
+                let deny_packet = Packet::DenyControl {
+                    username: controller,
+                };
+                deny_packet.send(app_data.socket.as_mut().unwrap()).unwrap();
+            }
+
+            {
+                let mut requesting_control = self.requesting_control.lock().unwrap();
+                let mut user_handled = String::new();
+                let mut was_allowed = false;
+
+                for user in requesting_control.iter() {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{} is requesting control.", user));
+
+                        if ui.button("Allow").clicked() {
+                            user_handled = user.to_string();
+                            was_allowed = true;
+                        }
+
+                        if ui.button("Deny").clicked() {
+                            user_handled = user.to_string();
+
+                            let deny_packet = Packet::DenyControl {
+                                username: user.to_string(),
+                            };
+                            deny_packet.send(app_data.socket.as_mut().unwrap()).unwrap();
+                        }
+                    });
+                }
+
+                if !user_handled.is_empty() {
+                    requesting_control.remove(&user_handled);
+                }
+
+                if was_allowed {
+                    // find current controller
+                    let usernames = self.usernames.lock().unwrap();
+                    let controller = usernames
+                        .iter()
+                        .find(|(_, user_type)| **user_type == UserType::Controller);
+
+                    // if found controller send Deny
+                    if let Some((controller, _)) = controller {
+                        let deny_packet = Packet::DenyControl {
+                            username: controller.to_string(),
+                        };
+                        deny_packet.send(app_data.socket.as_mut().unwrap()).unwrap();
+                    }
+
+                    // send to allowed user
+                    let allow_packet = Packet::RequestControl {
+                        username: user_handled.to_string(),
+                    };
+                    allow_packet
+                        .send(app_data.socket.as_mut().unwrap())
+                        .unwrap();
+
+                    // send Deny to all other users and clear
+                    for user in requesting_control.iter() {
+                        let deny_packet = Packet::DenyControl {
+                            username: user.to_string(),
+                        };
+                        deny_packet.send(app_data.socket.as_mut().unwrap()).unwrap();
+                    }
+
+                    // clear requesting users
+                    requesting_control.clear();
+                }
+            }
 
             if ui.button("End Session").clicked() {
                 result = Some(self.disconnect(app_data.socket.as_mut().unwrap()));
