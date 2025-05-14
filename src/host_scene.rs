@@ -4,7 +4,9 @@ use h264_reader::{
     nal::{Nal, RefNal, UnitType},
     push::NalInterest,
 };
-use remote_desktop::{protocol::ControlPayload, users_list, AppData, Scene, SceneChange, UserType};
+use remote_desktop::{
+    chat_ui, protocol::ControlPayload, users_list, AppData, Scene, SceneChange, UserType,
+};
 
 use eframe::egui::PointerButton;
 use remote_desktop::protocol::Packet;
@@ -118,6 +120,7 @@ fn thread_read_socket(
     mut socket: TcpStream,
     usernames: Arc<Mutex<HashMap<String, UserType>>>,
     requesting_control: Arc<Mutex<HashSet<String>>>,
+    chat_log: Arc<Mutex<Vec<String>>>,
 ) -> JoinHandle<()> {
     thread::spawn(move || loop {
         let packet = Packet::receive(&mut socket).unwrap_or_default();
@@ -126,12 +129,24 @@ fn thread_read_socket(
             Packet::UserUpdate {
                 user_type,
                 username,
+                ..
             } => {
                 let mut usernames = usernames.lock().unwrap();
                 if user_type == UserType::Leaving {
                     usernames.remove(&username);
+
+                    let mut chat_log = chat_log.lock().unwrap();
+                    chat_log.push(format!("#r{} has disconnected.", username));
                 } else {
-                    usernames.insert(username, user_type);
+                    let mut chat_log = chat_log.lock().unwrap();
+
+                    if usernames.contains_key(&username) {
+                        chat_log.push(format!("#b{} is now a {}.", username, user_type));
+                    } else {
+                        chat_log.push(format!("#g{} has joined the session.", username));
+                    }
+
+                    usernames.insert(username.clone(), user_type);
                 }
             }
 
@@ -153,6 +168,11 @@ fn thread_read_socket(
             Packet::RequestControl { username } => {
                 let mut requesting_control = requesting_control.lock().unwrap();
                 requesting_control.insert(username);
+            }
+
+            Packet::Chat { message } => {
+                let mut chat_log = chat_log.lock().unwrap();
+                chat_log.push(message);
             }
 
             Packet::SessionEnd => break,
@@ -279,6 +299,9 @@ pub struct HostScene {
     username: String,
     requesting_control: Arc<Mutex<HashSet<String>>>,
 
+    chat_log: Arc<Mutex<Vec<String>>>,
+    chat_message: String,
+
     ffmpeg_command: Child,
     thread_send_screen: Option<JoinHandle<()>>,
     thread_read_socket: Option<JoinHandle<()>>,
@@ -301,10 +324,13 @@ impl HostScene {
         let usernames = Arc::new(Mutex::new(usernames_types));
         let requesting_control = Arc::new(Mutex::new(HashSet::new()));
 
+        let chat_log = Arc::new(Mutex::new(Vec::new()));
+
         let thread_read_socket = thread_read_socket(
             socket.try_clone().unwrap(),
             usernames.clone(),
             requesting_control.clone(),
+            chat_log.clone(),
         );
 
         Self {
@@ -314,6 +340,9 @@ impl HostScene {
             usernames,
             username,
             requesting_control,
+
+            chat_log,
+            chat_message: String::new(),
 
             ffmpeg_command: command,
             thread_send_screen: Some(thread_send_screen),
@@ -340,13 +369,25 @@ impl Scene for HostScene {
     fn update(&mut self, ctx: &egui::Context, app_data: &mut AppData) -> Option<SceneChange> {
         let mut result: Option<SceneChange> = None;
 
+        egui::SidePanel::right("chat").show(ctx, |ui| {
+            chat_ui(
+                ui,
+                self.chat_log.lock().unwrap(),
+                &mut self.chat_message,
+                app_data.socket.as_mut().unwrap(),
+            );
+        });
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading(format!("Hosting, code {}", self.session_code));
             ui.separator();
 
-            if let Some(controller) =
-                users_list(ui, self.usernames.clone(), self.username.clone(), true)
-            {
+            if let Some(controller) = users_list(
+                ui,
+                self.usernames.lock().unwrap(),
+                self.username.clone(),
+                true,
+            ) {
                 let deny_packet = Packet::DenyControl {
                     username: controller,
                 };

@@ -151,6 +151,7 @@ fn handle_host(
     session: SharedSession,
     sessions: SessionHashMap,
     code: u32,
+    username: String,
 ) {
     loop {
         let packet = Packet::receive(socket).unwrap();
@@ -192,6 +193,7 @@ fn handle_host(
                     // notify all users
                     let user_update = Packet::UserUpdate {
                         user_type: UserType::Controller,
+                        joined_before: false,
                         username: username.to_string(),
                     };
                     session.broadcast_all(user_update);
@@ -208,10 +210,19 @@ fn handle_host(
                     // notify all users
                     let user_update = Packet::UserUpdate {
                         user_type: UserType::Participant,
+                        joined_before: false,
                         username: username.to_string(),
                     };
                     session.broadcast_all(user_update);
                 }
+            }
+
+            Packet::Chat { message } => {
+                let message = username.to_string() + ": " + &message;
+                let packet = Packet::Chat { message };
+
+                let mut session = session.lock().unwrap();
+                session.broadcast_all(packet);
             }
 
             _ => (),
@@ -257,6 +268,7 @@ fn handle_participant(socket: &mut TcpStream, session: SharedSession, username: 
 
                 let user_update_packet = Packet::UserUpdate {
                     user_type: UserType::Leaving,
+                    joined_before: false,
                     username: username.clone(),
                 };
                 session.broadcast_all(user_update_packet);
@@ -265,6 +277,14 @@ fn handle_participant(socket: &mut TcpStream, session: SharedSession, username: 
                 session_exit.send(socket).unwrap();
 
                 break;
+            }
+
+            Packet::Chat { message } => {
+                let message = username.to_string() + ": " + &message;
+                let packet = Packet::Chat { message };
+
+                let mut session = session.lock().unwrap();
+                session.broadcast_all(packet);
             }
 
             Packet::SessionEnd => break,
@@ -326,7 +346,13 @@ fn handle_client(mut socket: TcpStream, sessions: SessionHashMap) {
                     let success = ResultPacket::Success(format!("{}", code));
                     success.send(&mut socket).unwrap();
 
-                    handle_host(&mut socket, session, sessions.clone(), code);
+                    handle_host(
+                        &mut socket,
+                        session,
+                        sessions.clone(),
+                        code,
+                        username.clone(),
+                    );
                 }
 
                 Packet::Join { code } => {
@@ -343,12 +369,15 @@ fn handle_client(mut socket: TcpStream, sessions: SessionHashMap) {
                         let success = ResultPacket::Success("Joining".to_owned());
                         success.send(&mut socket).unwrap();
 
-                        // send new username to all participants
-                        let packet = Packet::UserUpdate {
-                            user_type: UserType::Participant,
-                            username: username.clone(),
-                        };
-                        session_guard.broadcast_all(packet);
+                        // send all usernames
+                        for (username, connection) in &session_guard.connections {
+                            let username_packet = Packet::UserUpdate {
+                                user_type: connection.user_type,
+                                joined_before: true,
+                                username: username.clone(),
+                            };
+                            username_packet.send(&mut socket).unwrap();
+                        }
 
                         // create connection
                         let connection = Connection {
@@ -360,14 +389,13 @@ fn handle_client(mut socket: TcpStream, sessions: SessionHashMap) {
                             .connections
                             .insert(username.clone(), connection);
 
-                        // send all usernames
-                        for (username, connection) in &session_guard.connections {
-                            let username_packet = Packet::UserUpdate {
-                                user_type: connection.user_type,
-                                username: username.clone(),
-                            };
-                            username_packet.send(&mut socket).unwrap();
-                        }
+                        // send new username to all participants
+                        let packet = Packet::UserUpdate {
+                            user_type: UserType::Participant,
+                            joined_before: false,
+                            username: username.clone(),
+                        };
+                        session_guard.broadcast_all(packet);
 
                         drop(session_guard);
 

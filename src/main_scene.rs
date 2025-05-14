@@ -1,7 +1,8 @@
 use eframe::egui::{self, pos2, Color32, Rect, Sense, Stroke, Ui, Vec2};
 use remote_desktop::protocol::{ControlPayload, Packet};
 use remote_desktop::{
-    egui_key_to_vk, normalize_mouse_position, users_list, AppData, Scene, SceneChange, UserType,
+    chat_ui, egui_key_to_vk, normalize_mouse_position, users_list, AppData, Scene, SceneChange,
+    UserType,
 };
 
 use crate::{menu_scene::MenuScene, modifiers_state::ModifiersState};
@@ -21,6 +22,12 @@ use std::{
 const REQUEST_CONTROL_MSG: &'static str = "Request Control";
 const WAITING_CONTROL_MSG: &'static str = "Waiting for response...";
 const CONTROLLING_MSG: &'static str = "You're the controller!";
+
+#[derive(PartialEq, Eq)]
+enum RightPanelType {
+    UsersList,
+    Chat,
+}
 
 fn start_ffmpeg() -> Child {
     let ffmpeg = Command::new("ffmpeg")
@@ -54,6 +61,7 @@ fn thread_receive_socket(
     stop_flag: Arc<AtomicBool>,
     usernames: Arc<Mutex<HashMap<String, UserType>>>,
     control_msg: Arc<Mutex<String>>,
+    chat_log: Arc<Mutex<Vec<String>>>,
 ) -> JoinHandle<()> {
     thread::spawn(move || loop {
         let packet = Packet::receive(&mut socket).unwrap_or_default();
@@ -63,13 +71,25 @@ fn thread_receive_socket(
 
             Packet::UserUpdate {
                 user_type,
+                joined_before,
                 username,
             } => {
                 let mut usernames = usernames.lock().unwrap();
                 if user_type == UserType::Leaving {
                     usernames.remove(&username);
+
+                    let mut chat_log = chat_log.lock().unwrap();
+                    chat_log.push(format!("#r{} has disconnected.", username));
                 } else {
-                    usernames.insert(username, user_type);
+                    let mut chat_log = chat_log.lock().unwrap();
+
+                    if usernames.contains_key(&username) {
+                        chat_log.push(format!("#b{} is now a {}.", username, user_type));
+                    } else if !joined_before {
+                        chat_log.push(format!("#g{} has joined the session.", username));
+                    }
+
+                    usernames.insert(username.clone(), user_type);
                 }
             }
 
@@ -95,6 +115,11 @@ fn thread_receive_socket(
                 stop_flag.store(true, Ordering::Relaxed);
                 packet.send(&mut socket).unwrap();
                 break;
+            }
+
+            Packet::Chat { message } => {
+                let mut chat_log = chat_log.lock().unwrap();
+                chat_log.push(message);
             }
 
             _ => (),
@@ -132,10 +157,14 @@ pub struct MainScene {
     modifiers_state: ModifiersState,
     stop_flag: Arc<AtomicBool>,
     image_rect: Rect,
+    right_panel_type: RightPanelType,
 
     usernames: Arc<Mutex<HashMap<String, UserType>>>,
     username: String,
     control_msg: Arc<Mutex<String>>,
+
+    chat_log: Arc<Mutex<Vec<String>>>,
+    chat_message: String,
 
     thread_receive_socket: Option<JoinHandle<()>>,
     thread_read_decoded: Option<JoinHandle<()>>,
@@ -156,12 +185,15 @@ impl MainScene {
         let usernames = Arc::new(Mutex::new(HashMap::new()));
         let control_msg = Arc::new(Mutex::new("Request Control".to_owned()));
 
+        let chat_log = Arc::new(Mutex::new(Vec::new()));
+
         let thread_receive_socket = thread_receive_socket(
             app_data.socket.as_mut().unwrap().try_clone().unwrap(),
             stdin,
             stop_flag.clone(),
             usernames.clone(),
             control_msg.clone(),
+            chat_log.clone(),
         );
         let thread_read_decoded = thread_read_decoded(frame_queue_clone, stdout, stop_flag.clone());
 
@@ -178,10 +210,14 @@ impl MainScene {
                 min: pos2(0.0, 0.0),
                 max: pos2(0.0, 0.0),
             },
+            right_panel_type: RightPanelType::UsersList,
 
             usernames,
             username,
             control_msg,
+
+            chat_log,
+            chat_message: String::new(),
 
             thread_receive_socket: Some(thread_receive_socket),
             thread_read_decoded: Some(thread_read_decoded),
@@ -350,10 +386,37 @@ impl Scene for MainScene {
         }
 
         egui::SidePanel::right("participants").show(ctx, |ui| {
-            ui.heading("Participants");
-            ui.separator();
+            ui.horizontal(|ui| {
+                ui.selectable_value(
+                    &mut self.right_panel_type,
+                    RightPanelType::UsersList,
+                    "User List",
+                );
+                ui.selectable_value(&mut self.right_panel_type, RightPanelType::Chat, "Chat");
+            });
 
-            users_list(ui, self.usernames.clone(), self.username.clone(), false);
+            match self.right_panel_type {
+                RightPanelType::UsersList => {
+                    ui.heading("Users");
+                    ui.separator();
+
+                    users_list(
+                        ui,
+                        self.usernames.lock().unwrap(),
+                        self.username.clone(),
+                        false,
+                    );
+                }
+
+                RightPanelType::Chat => {
+                    chat_ui(
+                        ui,
+                        self.chat_log.lock().unwrap(),
+                        &mut self.chat_message,
+                        app_data.socket.as_mut().unwrap(),
+                    );
+                }
+            }
         });
 
         egui::TopBottomPanel::bottom("bottom_panel")

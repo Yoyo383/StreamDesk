@@ -1,10 +1,7 @@
-use std::{
-    collections::HashMap,
-    net::TcpStream,
-    sync::{Arc, Mutex},
-};
+use std::{collections::HashMap, net::TcpStream, sync::MutexGuard};
 
-use eframe::egui::{self, Key, Pos2, Rect, Ui};
+use eframe::egui::{self, Color32, Key, Pos2, Rect, RichText, ScrollArea, TextStyle, Ui};
+use protocol::Packet;
 
 pub mod protocol;
 
@@ -112,13 +109,11 @@ pub fn normalize_mouse_position(mouse_position: Pos2, image_rect: Rect) -> (u32,
 /// Returns `Some(controller username)` if the "Revoke Control" button has been pressed. Otherwise returns `None`.
 pub fn users_list(
     ui: &mut Ui,
-    usernames: Arc<Mutex<HashMap<String, UserType>>>,
+    usernames: MutexGuard<HashMap<String, UserType>>,
     username: String,
     is_host: bool,
 ) -> Option<String> {
     let mut result: Option<String> = None;
-
-    let usernames = usernames.lock().unwrap();
 
     let mut hosts = Vec::new();
     let mut controllers = Vec::new();
@@ -179,6 +174,75 @@ pub fn users_list(
     result
 }
 
+/// Displays the chat UI. If clicked on the "Send" button, will send a Chat packet to the server.
+pub fn chat_ui(
+    ui: &mut Ui,
+    chat_log: MutexGuard<Vec<String>>,
+    message: &mut String,
+    socket: &mut TcpStream,
+) {
+    ui.heading("Chat");
+    ui.separator();
+
+    ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            ui.text_edit_singleline(message);
+            if ui.button("Send").clicked() && !message.is_empty() {
+                // send Chat packet
+                let chat_packet = Packet::Chat {
+                    message: message.to_string(),
+                };
+                chat_packet.send(socket).unwrap();
+
+                message.clear();
+            }
+        });
+
+        ui.add_space(10.0);
+
+        let text_style = TextStyle::Body;
+        let row_height = ui.text_style_height(&text_style);
+        ScrollArea::vertical().stick_to_bottom(true).show_rows(
+            ui,
+            row_height,
+            chat_log.len(),
+            |ui, row_range| {
+                let width = ui.fonts(|f| f.glyph_width(&TextStyle::Body.resolve(ui.style()), ' '));
+                ui.spacing_mut().item_spacing.x = width;
+
+                for row in row_range {
+                    let message = &mut chat_log[chat_log.len() - row - 1].clone();
+                    let mut text_color = Color32::WHITE;
+
+                    if message.chars().nth(0).unwrap() == '#' {
+                        let color = message.chars().nth(1).unwrap();
+
+                        // set color
+                        text_color = match color {
+                            'r' => Color32::RED,
+                            'g' => Color32::GREEN,
+                            'b' => Color32::BLUE,
+                            _ => Color32::WHITE,
+                        };
+
+                        message.drain(..2);
+                    }
+
+                    if let Some((username, message)) = message.split_once(": ") {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(format!("{}:", username)).strong());
+                            ui.label(message);
+                        });
+                    } else {
+                        ui.colored_label(text_color, message);
+                    }
+                }
+            },
+        );
+    });
+}
+
 pub struct AppData {
     pub socket: Option<TcpStream>,
 }
@@ -200,4 +264,17 @@ pub enum UserType {
     Host,
     Controller,
     Participant,
+}
+
+impl std::fmt::Display for UserType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let str = match self {
+            UserType::Host => "Host",
+            UserType::Controller => "Controller",
+            UserType::Participant => "Participant",
+            UserType::Leaving => "Leaving",
+        };
+
+        write!(f, "{}", str)
+    }
 }

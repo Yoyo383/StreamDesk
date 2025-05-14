@@ -114,6 +114,7 @@ pub enum Packet {
 
     UserUpdate {
         user_type: UserType,
+        joined_before: bool,
         username: String,
     },
 
@@ -142,6 +143,10 @@ pub enum Packet {
     Shutdown,
 
     SessionEnd,
+
+    Chat {
+        message: String,
+    },
 }
 
 impl Packet {
@@ -180,11 +185,13 @@ impl Packet {
 
             Packet::UserUpdate {
                 user_type,
+                joined_before,
                 username,
             } => {
                 result.push(5);
 
                 result.push(*user_type as u8);
+                result.push(*joined_before as u8);
                 write_length_and_string(&mut result, &username);
             }
 
@@ -231,6 +238,12 @@ impl Packet {
 
             Packet::SessionEnd => {
                 result.push(14);
+            }
+
+            Packet::Chat { message } => {
+                result.push(15);
+
+                write_length_and_string(&mut result, &message);
             }
         }
 
@@ -296,11 +309,16 @@ impl Packet {
                     }
                 };
 
+                let mut joined_before_buf = [0u8; 1];
+                socket.read_exact(&mut joined_before_buf)?;
+                let joined_before = u8::from_be_bytes(joined_before_buf) != 0;
+
                 let username = String::from_utf8(read_length_and_data(socket)?)
                     .expect("bytes should be valid utf8.");
 
                 Ok(Self::UserUpdate {
                     user_type,
+                    joined_before,
                     username,
                 })
             }
@@ -356,7 +374,15 @@ impl Packet {
             // Shutdown
             13 => Ok(Self::Shutdown),
 
+            // SessionEnd
             14 => Ok(Self::SessionEnd),
+
+            // Chat
+            15 => {
+                let message = String::from_utf8(read_length_and_data(socket)?)
+                    .expect("bytes should be valid utf8");
+                Ok(Self::Chat { message })
+            }
 
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
