@@ -19,7 +19,7 @@ pub fn get_i32_from_packet(bytes: &mut VecDeque<u8>) -> Option<i32> {
 }
 
 pub fn get_u16_from_packet(bytes: &mut VecDeque<u8>) -> Option<u16> {
-    let data: Vec<u8> = bytes.drain(0..4).collect();
+    let data: Vec<u8> = bytes.drain(0..2).collect();
     Some(u16::from_be_bytes(data.try_into().ok()?))
 }
 

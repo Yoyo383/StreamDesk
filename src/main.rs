@@ -49,6 +49,8 @@ impl eframe::App for MyApp {
                 SceneChange::Quit => (),
             }
         }
+
+        ctx.request_repaint();
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {

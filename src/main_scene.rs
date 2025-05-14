@@ -341,8 +341,6 @@ impl MainScene {
             ui.ctx().memory_mut(|mem| mem.request_focus(egui::Id::NULL));
             ui.input(|input| self.handle_input(input, app_data));
         }
-
-        ctx.request_repaint();
     }
 
     fn disconnect(&mut self, socket: &mut TcpStream) -> SceneChange {
