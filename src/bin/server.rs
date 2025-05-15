@@ -1,4 +1,4 @@
-use chrono::{DateTime, Local};
+use chrono::Local;
 use rand::Rng;
 use remote_desktop::{
     protocol::{Packet, ResultPacket},
@@ -76,8 +76,8 @@ impl Session {
     }
 }
 
-fn start_ffmpeg(time_string: String) -> Child {
-    let output_path = PathBuf::from(RECORDINGS_FOLDER).join(format!("{time_string}.mp4"));
+fn start_ffmpeg(filename: &str) -> Child {
+    let output_path = PathBuf::from(RECORDINGS_FOLDER).join(format!("{filename}.mp4"));
 
     let ffmpeg = Command::new("ffmpeg")
         .args([
@@ -108,11 +108,23 @@ fn generate_session_code(sessions: &HashMap<u32, SharedSession>) -> u32 {
     }
 }
 
+fn insert_recording_to_database(
+    conn: &rusqlite::Connection,
+    filename: &str,
+    time: &str,
+    user_id: i32,
+) {
+    let _ = conn.execute(
+        "INSERT INTO recordings (filename, time, user_id) VALUES (?1, ?2, ?3)",
+        params![filename, time, user_id],
+    );
+}
+
 fn login_or_register(
     packet: Packet,
     socket: &mut TcpStream,
     conn: &rusqlite::Connection,
-) -> Option<String> {
+) -> Option<(String, i32)> {
     match packet {
         Packet::Shutdown => None,
 
@@ -124,10 +136,26 @@ fn login_or_register(
             );
 
             match user_id_result {
-                Ok(_) => {
+                Ok(user_id) => {
                     let result = ResultPacket::Success("Signing in".to_owned());
                     result.send(socket).unwrap();
-                    Some(username)
+
+                    let mut query = conn
+                        .prepare("SELECT filename, time FROM recordings WHERE user_id = ?1")
+                        .unwrap();
+
+                    // get a vector of (filename, time)
+                    let recording_file_paths: Vec<(String, String)> = query
+                        .query_map(params![user_id], |row| {
+                            Ok((row.get(0).unwrap(), row.get(1).unwrap()))
+                        })
+                        .unwrap()
+                        .collect::<Result<Vec<(String, String)>, _>>()
+                        .unwrap();
+
+                    println!("{:?}", recording_file_paths);
+
+                    Some((username, user_id))
                 }
                 Err(rusqlite::Error::QueryReturnedNoRows) => {
                     let result =
@@ -153,7 +181,9 @@ fn login_or_register(
                 Ok(_) => {
                     let result = ResultPacket::Success("Signing in".to_owned());
                     result.send(socket).unwrap();
-                    Some(username)
+
+                    let user_id = conn.last_insert_rowid() as i32;
+                    Some((username, user_id))
                 }
                 Err(SqliteFailure(e, _)) if e.extended_code == SQLITE_CONSTRAINT_UNIQUE => {
                     let result = ResultPacket::Failure("Username already taken.".to_owned());
@@ -178,11 +208,13 @@ fn handle_host(
     sessions: SessionHashMap,
     code: u32,
     username: String,
+    user_id: i32,
+    conn: &rusqlite::Connection,
 ) {
-    let time: DateTime<Local> = Local::now();
-    let time_string = time.format("%F_%H-%M-%S").to_string();
+    let time = Local::now().to_rfc3339();
+    let filename = uuid::Uuid::new_v4().to_string();
 
-    let mut ffmpeg = start_ffmpeg(time_string);
+    let mut ffmpeg = start_ffmpeg(&filename);
     let mut stdin = ffmpeg.stdin.take().unwrap();
 
     loop {
@@ -264,6 +296,8 @@ fn handle_host(
 
     drop(stdin);
     let _ = ffmpeg.wait();
+
+    insert_recording_to_database(conn, &filename, &time, user_id);
 }
 
 fn handle_participant(socket: &mut TcpStream, session: SharedSession, username: String) {
@@ -333,6 +367,7 @@ fn handle_participant(socket: &mut TcpStream, session: SharedSession, username: 
 fn handle_client(mut socket: TcpStream, sessions: SessionHashMap) {
     let conn = rusqlite::Connection::open(DATABASE_FILE).unwrap();
     let mut username: String;
+    let mut user_id: i32;
 
     loop {
         loop {
@@ -346,8 +381,9 @@ fn handle_client(mut socket: TcpStream, sessions: SessionHashMap) {
             }
 
             let result = login_or_register(packet, &mut socket, &conn);
-            if let Some(user) = result {
+            if let Some((user, id)) = result {
                 username = user;
+                user_id = id;
                 break;
             }
         }
@@ -388,6 +424,8 @@ fn handle_client(mut socket: TcpStream, sessions: SessionHashMap) {
                         sessions.clone(),
                         code,
                         username.clone(),
+                        user_id,
+                        &conn,
                     );
                 }
 
@@ -454,9 +492,22 @@ fn main() {
     let conn = rusqlite::Connection::open(DATABASE_FILE).unwrap();
     conn.execute(
         "CREATE TABLE IF NOT EXISTS users(
-            user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER PRIMARY KEY,
             username TEXT NOT NULL UNIQUE,
             password TEXT NOT NULL
+        )
+        ",
+        [],
+    )
+    .unwrap();
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS recordings(
+            recording_id INTEGER PRIMARY KEY,
+            filename TEXT NOT NULL,
+            time TEXT NOT NULL,
+            user_id INTEGER,
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
         )
         ",
         [],
