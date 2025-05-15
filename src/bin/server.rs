@@ -1,3 +1,4 @@
+use chrono::{DateTime, Local};
 use rand::Rng;
 use remote_desktop::{
     protocol::{Packet, ResultPacket},
@@ -6,11 +7,15 @@ use remote_desktop::{
 use rusqlite::{ffi::SQLITE_CONSTRAINT_UNIQUE, params, Error::SqliteFailure};
 use std::{
     collections::HashMap,
+    io::Write,
     net::{TcpListener, TcpStream},
+    path::PathBuf,
+    process::{Child, Command, Stdio},
     sync::{Arc, Mutex},
     thread,
 };
 
+const RECORDINGS_FOLDER: &'static str = "recordings";
 const DATABASE_FILE: &'static str = "database.sqlite";
 
 type SharedSession = Arc<Mutex<Session>>;
@@ -71,6 +76,27 @@ impl Session {
     }
 }
 
+fn start_ffmpeg(time_string: String) -> Child {
+    let output_path = PathBuf::from(RECORDINGS_FOLDER).join(format!("{time_string}.mp4"));
+
+    let ffmpeg = Command::new("ffmpeg")
+        .args([
+            "-f",
+            "h264",
+            "-i",
+            "-",
+            "-c",
+            "copy",
+            output_path.to_str().unwrap(),
+        ])
+        .stdin(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("Failed to spawn ffmpeg");
+
+    ffmpeg
+}
+
 fn generate_session_code(sessions: &HashMap<u32, SharedSession>) -> u32 {
     let mut rng = rand::rng();
     loop {
@@ -92,7 +118,7 @@ fn login_or_register(
 
         Packet::Login { username, password } => {
             let user_id_result: Result<i32, rusqlite::Error> = conn.query_row(
-                "SELECT id FROM users WHERE username = ?1 AND password = ?2",
+                "SELECT user_id FROM users WHERE username = ?1 AND password = ?2",
                 params![username, password],
                 |row| row.get(0),
             );
@@ -153,11 +179,18 @@ fn handle_host(
     code: u32,
     username: String,
 ) {
+    let time: DateTime<Local> = Local::now();
+    let time_string = time.format("%F_%H-%M-%S").to_string();
+
+    let mut ffmpeg = start_ffmpeg(time_string);
+    let mut stdin = ffmpeg.stdin.take().unwrap();
+
     loop {
         let packet = Packet::receive(socket).unwrap();
 
         match packet {
-            Packet::Screen { .. } => {
+            Packet::Screen { ref bytes } => {
+                stdin.write_all(&bytes).unwrap();
                 let mut session = session.lock().unwrap();
                 session.broadcast_participants(packet);
             }
@@ -228,6 +261,9 @@ fn handle_host(
             _ => (),
         }
     }
+
+    drop(stdin);
+    let _ = ffmpeg.wait();
 }
 
 fn handle_participant(socket: &mut TcpStream, session: SharedSession, username: String) {
@@ -418,7 +454,7 @@ fn main() {
     let conn = rusqlite::Connection::open(DATABASE_FILE).unwrap();
     conn.execute(
         "CREATE TABLE IF NOT EXISTS users(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL UNIQUE,
             password TEXT NOT NULL
         )
