@@ -1,10 +1,14 @@
+use std::{collections::HashMap, net::TcpStream};
+
 use eframe::egui::{self, Align, Button, Color32, FontId, Layout, RichText, TextEdit, Ui};
 use remote_desktop::{
     protocol::{Packet, ResultPacket},
     AppData, Scene, SceneChange,
 };
 
-use crate::{host_scene::HostScene, login_scene::LoginScene, main_scene::MainScene};
+use crate::{
+    host_scene::HostScene, login_scene::LoginScene, main_scene::MainScene, watch_scene::WatchScene,
+};
 
 fn numeric_text_edit(ui: &mut Ui, value: &mut String) {
     let response = ui.add(
@@ -19,18 +23,42 @@ fn numeric_text_edit(ui: &mut Ui, value: &mut String) {
     }
 }
 
+fn receive_recordings(socket: &mut TcpStream) -> HashMap<i32, String> {
+    let mut recordings = HashMap::new();
+
+    loop {
+        let packet = Packet::receive(socket).unwrap();
+
+        match packet {
+            Packet::None => break,
+
+            Packet::RecordingName { id, name } => {
+                recordings.insert(id, name);
+            }
+
+            _ => (),
+        }
+    }
+
+    recordings
+}
+
 pub struct MenuScene {
     session_code: String,
     join_fail_message: String,
     username: String,
+    recordings: HashMap<i32, String>,
 }
 
 impl MenuScene {
-    pub fn new(username: String) -> Self {
+    pub fn new(username: String, socket: &mut TcpStream) -> Self {
+        let recordings = receive_recordings(socket);
+
         Self {
             session_code: String::new(),
             join_fail_message: String::new(),
             username,
+            recordings,
         }
     }
 
@@ -74,8 +102,8 @@ impl MenuScene {
 }
 
 impl Scene for MenuScene {
-    fn update(&mut self, ctx: &egui::Context, app_data: &mut AppData) -> Option<SceneChange> {
-        let mut result: Option<SceneChange> = None;
+    fn update(&mut self, ctx: &egui::Context, app_data: &mut AppData) -> SceneChange {
+        let mut result: SceneChange = SceneChange::None;
 
         egui::TopBottomPanel::top("title_bar").show(ctx, |ui| {
             ui.with_layout(Layout::top_down(Align::Center), |ui| {
@@ -100,7 +128,7 @@ impl Scene for MenuScene {
                             .send(app_data.socket.as_mut().unwrap())
                             .unwrap();
 
-                        result = Some(SceneChange::To(Box::new(LoginScene::new(None, true))));
+                        result = SceneChange::To(Box::new(LoginScene::new(None, true)));
                     }
 
                     ui.label(RichText::new(format!("Welcome, {}", self.username)).size(20.0));
@@ -109,49 +137,67 @@ impl Scene for MenuScene {
                 ui.add_space(10.0);
             });
 
-        let available_width = ctx.available_rect().width();
-        let panel_width = available_width / 2.0;
+        egui::SidePanel::right("join_panel").show(ctx, |ui| {
+            ui.heading("Watch past recordings");
+            ui.separator();
 
-        egui::SidePanel::right("join_panel")
-            .resizable(false)
-            .exact_width(panel_width)
-            .show(ctx, |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(10.0);
-                    ui.label(RichText::new("Join Session").size(20.0));
-                    ui.add_space(10.0);
+            for (id, recording) in &self.recordings {
+                if ui.button(recording).clicked() {
+                    let packet = Packet::WatchRecording { id: *id };
+                    packet.send(app_data.socket.as_mut().unwrap()).unwrap();
 
-                    numeric_text_edit(ui, &mut self.session_code);
-
-                    ui.add_space(10.0);
-
-                    let join_button = ui.add(|ui: &mut Ui| {
-                        ui.add_sized([100.0, 40.0], Button::new(RichText::new("Join").size(20.0)))
-                    });
-
-                    if join_button.clicked() {
-                        match self.session_code.parse::<u32>() {
-                            Ok(session_code) => match self.join_button(session_code, app_data) {
-                                Ok(scene_change) => result = Some(scene_change),
-                                Err(msg) => self.join_fail_message = msg,
-                            },
-                            Err(_) => {
-                                self.join_fail_message =
-                                    "Invalid session code. Please enter a 6 digit code.".to_string()
-                            }
+                    let result_packet =
+                        ResultPacket::receive(app_data.socket.as_mut().unwrap()).unwrap();
+                    match result_packet {
+                        ResultPacket::Failure(msg) => self.join_fail_message = msg,
+                        ResultPacket::Success(_) => {
+                            result = SceneChange::To(Box::new(WatchScene::new(
+                                self.username.clone(),
+                                app_data.socket.as_mut().unwrap(),
+                            )));
                         }
                     }
-
-                    ui.add_space(10.0);
-                    ui.label(
-                        RichText::new(&self.join_fail_message)
-                            .size(20.0)
-                            .color(Color32::RED),
-                    );
-                });
-            });
+                }
+            }
+        });
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(10.0);
+                ui.label(RichText::new("Join Session").size(20.0));
+                ui.add_space(10.0);
+
+                numeric_text_edit(ui, &mut self.session_code);
+
+                ui.add_space(10.0);
+
+                let join_button = ui.add(|ui: &mut Ui| {
+                    ui.add_sized([100.0, 40.0], Button::new(RichText::new("Join").size(20.0)))
+                });
+
+                if join_button.clicked() {
+                    match self.session_code.parse::<u32>() {
+                        Ok(session_code) => match self.join_button(session_code, app_data) {
+                            Ok(scene_change) => result = scene_change,
+                            Err(msg) => self.join_fail_message = msg,
+                        },
+                        Err(_) => {
+                            self.join_fail_message =
+                                "Invalid session code. Please enter a 6 digit code.".to_string()
+                        }
+                    }
+                }
+
+                ui.add_space(10.0);
+                ui.label(
+                    RichText::new(&self.join_fail_message)
+                        .size(20.0)
+                        .color(Color32::RED),
+                );
+            });
+
+            ui.separator();
+
             ui.vertical_centered(|ui| {
                 ui.label(RichText::new("Host Session").size(20.0));
                 ui.add_space(10.0);
@@ -161,7 +207,7 @@ impl Scene for MenuScene {
                 });
 
                 if host_button.clicked() {
-                    result = Some(self.host_button(app_data));
+                    result = self.host_button(app_data);
                 }
             });
         });

@@ -11,6 +11,7 @@ mod login_scene;
 mod main_scene;
 mod menu_scene;
 mod modifiers_state;
+mod watch_scene;
 
 fn connect_to_server(sender: Sender<Option<TcpStream>>) {
     thread::spawn(move || match TcpStream::connect("127.0.0.1:7643") {
@@ -43,11 +44,10 @@ impl MyApp {
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if let Some(scene_change) = self.scene.as_mut().update(ctx, &mut self.data) {
-            match scene_change {
-                SceneChange::To(scene) => self.scene = scene,
-                SceneChange::Quit => (),
-            }
+        let scene_change = self.scene.as_mut().update(ctx, &mut self.data);
+        match scene_change {
+            SceneChange::To(scene) => self.scene = scene,
+            _ => (),
         }
 
         ctx.request_repaint();

@@ -1,4 +1,9 @@
-use chrono::Local;
+use chrono::{DateTime, Local};
+use h264_reader::{
+    annexb::AnnexBReader,
+    nal::{Nal, RefNal},
+    push::NalInterest,
+};
 use rand::Rng;
 use remote_desktop::{
     protocol::{Packet, ResultPacket},
@@ -7,12 +12,15 @@ use remote_desktop::{
 use rusqlite::{ffi::SQLITE_CONSTRAINT_UNIQUE, params, Error::SqliteFailure};
 use std::{
     collections::HashMap,
-    io::Write,
+    io::{Read, Write},
     net::{TcpListener, TcpStream},
     path::PathBuf,
-    process::{Child, Command, Stdio},
-    sync::{Arc, Mutex},
-    thread,
+    process::{Child, ChildStdout, Command, Stdio},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    thread::{self, JoinHandle},
 };
 
 const RECORDINGS_FOLDER: &'static str = "recordings";
@@ -27,6 +35,11 @@ enum ConnectionType {
     Controller,
     Participant,
     Unready,
+}
+
+struct Recording {
+    filename: String,
+    time: String,
 }
 
 #[derive(Debug)]
@@ -76,7 +89,7 @@ impl Session {
     }
 }
 
-fn start_ffmpeg(filename: &str) -> Child {
+fn ffmpeg_save_recording(filename: &str) -> Child {
     let output_path = PathBuf::from(RECORDINGS_FOLDER).join(format!("{filename}.mp4"));
 
     let ffmpeg = Command::new("ffmpeg")
@@ -93,6 +106,35 @@ fn start_ffmpeg(filename: &str) -> Child {
         .stderr(Stdio::null())
         .spawn()
         .expect("Failed to spawn ffmpeg");
+
+    ffmpeg
+}
+
+fn ffmpeg_send_recording(filename: &str) -> Child {
+    let input_path = PathBuf::from(RECORDINGS_FOLDER).join(format!("{filename}.mp4"));
+
+    let ffmpeg = Command::new("ffmpeg")
+        .args(&[
+            "-i",
+            input_path.to_str().unwrap(),
+            "-vcodec",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-tune",
+            "zerolatency",
+            "-x264opts",
+            "no-scenecut",
+            "-sc_threshold",
+            "0",
+            "-f",
+            "h264",
+            "-",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("Failed to start FFmpeg");
 
     ffmpeg
 }
@@ -120,11 +162,33 @@ fn insert_recording_to_database(
     );
 }
 
+fn query_recordings(conn: &rusqlite::Connection, user_id: i32) -> HashMap<i32, Recording> {
+    let mut query = conn
+        .prepare("SELECT recording_id, filename, time FROM recordings WHERE user_id = ?1")
+        .unwrap();
+
+    // get a vector of (filename, time)
+    let recordings = query
+        .query_map([user_id], |row| {
+            let id: i32 = row.get(0)?;
+            let recording = Recording {
+                filename: row.get(1)?,
+                time: row.get(2)?,
+            };
+            Ok((id, recording))
+        })
+        .unwrap()
+        .collect::<Result<HashMap<_, _>, _>>()
+        .unwrap();
+
+    recordings
+}
+
 fn login_or_register(
     packet: Packet,
     socket: &mut TcpStream,
     conn: &rusqlite::Connection,
-) -> Option<(String, i32)> {
+) -> Option<(String, i32, HashMap<i32, Recording>)> {
     match packet {
         Packet::Shutdown => None,
 
@@ -140,22 +204,9 @@ fn login_or_register(
                     let result = ResultPacket::Success("Signing in".to_owned());
                     result.send(socket).unwrap();
 
-                    let mut query = conn
-                        .prepare("SELECT filename, time FROM recordings WHERE user_id = ?1")
-                        .unwrap();
+                    let recordings = query_recordings(&conn, user_id);
 
-                    // get a vector of (filename, time)
-                    let recording_file_paths: Vec<(String, String)> = query
-                        .query_map(params![user_id], |row| {
-                            Ok((row.get(0).unwrap(), row.get(1).unwrap()))
-                        })
-                        .unwrap()
-                        .collect::<Result<Vec<(String, String)>, _>>()
-                        .unwrap();
-
-                    println!("{:?}", recording_file_paths);
-
-                    Some((username, user_id))
+                    Some((username, user_id, recordings))
                 }
                 Err(rusqlite::Error::QueryReturnedNoRows) => {
                     let result =
@@ -183,7 +234,9 @@ fn login_or_register(
                     result.send(socket).unwrap();
 
                     let user_id = conn.last_insert_rowid() as i32;
-                    Some((username, user_id))
+                    let recordings = query_recordings(&conn, user_id);
+
+                    Some((username, user_id, recordings))
                 }
                 Err(SqliteFailure(e, _)) if e.extended_code == SQLITE_CONSTRAINT_UNIQUE => {
                     let result = ResultPacket::Failure("Username already taken.".to_owned());
@@ -214,7 +267,7 @@ fn handle_host(
     let time = Local::now().to_rfc3339();
     let filename = uuid::Uuid::new_v4().to_string();
 
-    let mut ffmpeg = start_ffmpeg(&filename);
+    let mut ffmpeg = ffmpeg_save_recording(&filename);
     let mut stdin = ffmpeg.stdin.take().unwrap();
 
     loop {
@@ -364,10 +417,85 @@ fn handle_participant(socket: &mut TcpStream, session: SharedSession, username: 
     }
 }
 
+fn thread_send_screen(
+    mut socket: TcpStream,
+    mut stdout: ChildStdout,
+    stop_flag: Arc<AtomicBool>,
+) -> JoinHandle<()> {
+    thread::spawn(move || {
+        let mut reader = AnnexBReader::accumulate(|nal: RefNal<'_>| {
+            if !nal.is_complete() {
+                return NalInterest::Buffer; // not ready yet
+            }
+
+            // getting nal unit type
+            match nal.header() {
+                Ok(_) => (),
+                Err(_) => return NalInterest::Ignore,
+            };
+
+            // sending the NAL (with the start)
+            let mut nal_bytes: Vec<u8> = vec![0x00, 0x00, 0x01];
+            nal.reader()
+                .read_to_end(&mut nal_bytes)
+                .expect("should be able to read NAL");
+
+            let screen_packet = Packet::Screen { bytes: nal_bytes };
+            screen_packet.send(&mut socket).unwrap();
+
+            NalInterest::Ignore
+        });
+
+        let mut buffer = [0u8; 4096];
+
+        while !stop_flag.load(Ordering::Relaxed) {
+            match stdout.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => {
+                    reader.push(&buffer[..n]);
+                }
+                Err(e) => {
+                    eprintln!("ffmpeg read error: {}", e);
+                    break;
+                }
+            }
+        }
+    })
+}
+
+fn handle_watching(socket: &mut TcpStream, filename: &str) {
+    let mut ffmpeg = ffmpeg_send_recording(filename);
+    let stdout = ffmpeg.stdout.take().unwrap();
+
+    let stop_flag = Arc::new(AtomicBool::new(false));
+
+    let thread_send_screen =
+        thread_send_screen(socket.try_clone().unwrap(), stdout, stop_flag.clone());
+
+    loop {
+        let packet = Packet::receive(socket).unwrap();
+
+        match packet {
+            Packet::SessionExit => {
+                stop_flag.store(true, Ordering::Relaxed);
+                let _ = thread_send_screen.join();
+
+                let packet = Packet::SessionExit;
+                packet.send(socket).unwrap();
+
+                break;
+            }
+
+            _ => (),
+        }
+    }
+}
+
 fn handle_client(mut socket: TcpStream, sessions: SessionHashMap) {
     let conn = rusqlite::Connection::open(DATABASE_FILE).unwrap();
     let mut username: String;
     let mut user_id: i32;
+    let mut recordings: HashMap<i32, Recording>;
 
     loop {
         loop {
@@ -381,14 +509,30 @@ fn handle_client(mut socket: TcpStream, sessions: SessionHashMap) {
             }
 
             let result = login_or_register(packet, &mut socket, &conn);
-            if let Some((user, id)) = result {
+            if let Some((user, id, records)) = result {
                 username = user;
                 user_id = id;
+                recordings = records;
                 break;
             }
         }
 
         loop {
+            // send all recordings
+            for (id, recording) in &recordings {
+                let time: DateTime<Local> = recording.time.parse().unwrap();
+                let recording_display_name = time.format("%B %-d, %Y | %T").to_string();
+
+                let packet = Packet::RecordingName {
+                    id: *id,
+                    name: recording_display_name,
+                };
+                packet.send(&mut socket).unwrap();
+            }
+            let end_packet = Packet::None;
+            end_packet.send(&mut socket).unwrap();
+
+            // receive first packet
             let packet = Packet::receive(&mut socket).unwrap();
 
             match packet {
@@ -479,6 +623,22 @@ fn handle_client(mut socket: TcpStream, sessions: SessionHashMap) {
                         let failure =
                             ResultPacket::Failure(format!("No session found with code {}", code));
                         failure.send(&mut socket).unwrap();
+                    }
+                }
+
+                Packet::WatchRecording { id } => {
+                    let recording = recordings.get(&id);
+                    match recording {
+                        Some(recording) => {
+                            let success = ResultPacket::Success("Watching".to_owned());
+                            success.send(&mut socket).unwrap();
+
+                            handle_watching(&mut socket, &recording.filename);
+                        }
+                        None => {
+                            let failure = ResultPacket::Failure("No recording found.".to_owned());
+                            failure.send(&mut socket).unwrap();
+                        }
                     }
                 }
 

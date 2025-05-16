@@ -32,7 +32,7 @@ impl LoginScene {
         }
     }
 
-    fn login(&mut self, socket: &mut TcpStream) -> Option<SceneChange> {
+    fn login(&mut self, socket: &mut TcpStream) -> SceneChange {
         let password = format!("{:x}", md5::compute(self.password.clone()));
 
         let login_packet = Packet::Login {
@@ -45,16 +45,16 @@ impl LoginScene {
         match result {
             ResultPacket::Failure(msg) => {
                 self.error_message = msg;
-                None
+                SceneChange::None
             }
 
-            ResultPacket::Success(_) => Some(SceneChange::To(Box::new(MenuScene::new(
-                self.username.clone(),
-            )))),
+            ResultPacket::Success(_) => {
+                SceneChange::To(Box::new(MenuScene::new(self.username.clone(), socket)))
+            }
         }
     }
 
-    fn register(&mut self, socket: &mut TcpStream) -> Option<SceneChange> {
+    fn register(&mut self, socket: &mut TcpStream) -> SceneChange {
         let password = format!("{:x}", md5::compute(self.password.clone()));
 
         let register_packet = Packet::Register {
@@ -67,19 +67,19 @@ impl LoginScene {
         match result {
             ResultPacket::Failure(msg) => {
                 self.error_message = msg;
-                None
+                SceneChange::None
             }
 
-            ResultPacket::Success(_) => Some(SceneChange::To(Box::new(MenuScene::new(
-                self.username.clone(),
-            )))),
+            ResultPacket::Success(_) => {
+                SceneChange::To(Box::new(MenuScene::new(self.username.clone(), socket)))
+            }
         }
     }
 }
 
 impl Scene for LoginScene {
-    fn update(&mut self, ctx: &egui::Context, app_data: &mut AppData) -> Option<SceneChange> {
-        let mut result: Option<SceneChange> = None;
+    fn update(&mut self, ctx: &egui::Context, app_data: &mut AppData) -> SceneChange {
+        let mut result: SceneChange = SceneChange::None;
 
         if !self.connected_to_server {
             match self.socket_receiver.as_ref().unwrap().try_recv() {

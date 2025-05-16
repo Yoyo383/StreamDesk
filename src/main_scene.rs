@@ -347,19 +347,17 @@ impl MainScene {
         let session_exit = Packet::SessionExit;
         session_exit.send(socket).unwrap();
 
-        // self.stop_flag.store(true, Ordering::Relaxed);
-
         let _ = self.thread_receive_socket.take().unwrap().join();
         let _ = self.thread_read_decoded.take().unwrap().join();
         let _ = self.ffmpeg_command.kill();
 
-        SceneChange::To(Box::new(MenuScene::new(self.username.clone())))
+        SceneChange::To(Box::new(MenuScene::new(self.username.clone(), socket)))
     }
 }
 
 impl Scene for MainScene {
-    fn update(&mut self, ctx: &egui::Context, app_data: &mut AppData) -> Option<SceneChange> {
-        let mut result: Option<SceneChange> = None;
+    fn update(&mut self, ctx: &egui::Context, app_data: &mut AppData) -> SceneChange {
+        let mut result: SceneChange = SceneChange::None;
 
         let now = Instant::now();
         let dt = now.duration_since(self.now).as_secs_f32();
@@ -378,9 +376,10 @@ impl Scene for MainScene {
             let _ = self.thread_receive_socket.take().unwrap().join();
             let _ = self.thread_read_decoded.take().unwrap().join();
 
-            return Some(SceneChange::To(Box::new(MenuScene::new(
+            return SceneChange::To(Box::new(MenuScene::new(
                 self.username.clone(),
-            ))));
+                app_data.socket.as_mut().unwrap(),
+            )));
         }
 
         egui::SidePanel::right("participants").show(ctx, |ui| {
@@ -422,7 +421,7 @@ impl Scene for MainScene {
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
                     if ui.button("Disconnect").clicked() {
-                        result = Some(self.disconnect(app_data.socket.as_mut().unwrap()));
+                        result = self.disconnect(app_data.socket.as_mut().unwrap());
                     }
 
                     let mut control_msg = self.control_msg.lock().unwrap();

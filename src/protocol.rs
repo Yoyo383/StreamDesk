@@ -147,6 +147,15 @@ pub enum Packet {
     Chat {
         message: String,
     },
+
+    WatchRecording {
+        id: i32,
+    },
+
+    RecordingName {
+        id: i32,
+        name: String,
+    },
 }
 
 impl Packet {
@@ -244,6 +253,19 @@ impl Packet {
                 result.push(15);
 
                 write_length_and_string(&mut result, &message);
+            }
+
+            Packet::WatchRecording { id } => {
+                result.push(16);
+
+                result.extend_from_slice(&id.to_be_bytes());
+            }
+
+            Packet::RecordingName { id, name } => {
+                result.push(17);
+
+                result.extend_from_slice(&id.to_be_bytes());
+                write_length_and_string(&mut result, &name);
             }
         }
 
@@ -382,6 +404,24 @@ impl Packet {
                 let message = String::from_utf8(read_length_and_data(socket)?)
                     .expect("bytes should be valid utf8");
                 Ok(Self::Chat { message })
+            }
+
+            16 => {
+                let mut id_buf = [0u8; 4];
+                socket.read_exact(&mut id_buf).unwrap();
+                let id = i32::from_be_bytes(id_buf);
+
+                Ok(Self::WatchRecording { id })
+            }
+
+            17 => {
+                let mut id_buf = [0u8; 4];
+                socket.read_exact(&mut id_buf).unwrap();
+                let id = i32::from_be_bytes(id_buf);
+                let name = String::from_utf8(read_length_and_data(socket)?)
+                    .expect("bytes should be valid utf8");
+
+                Ok(Self::RecordingName { id, name })
             }
 
             _ => Err(std::io::Error::new(

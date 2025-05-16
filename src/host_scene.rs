@@ -361,13 +361,13 @@ impl HostScene {
 
         let _ = self.thread_read_socket.take().unwrap().join();
 
-        SceneChange::To(Box::new(MenuScene::new(self.username.clone())))
+        SceneChange::To(Box::new(MenuScene::new(self.username.clone(), socket)))
     }
 }
 
 impl Scene for HostScene {
-    fn update(&mut self, ctx: &egui::Context, app_data: &mut AppData) -> Option<SceneChange> {
-        let mut result: Option<SceneChange> = None;
+    fn update(&mut self, ctx: &egui::Context, app_data: &mut AppData) -> SceneChange {
+        let mut result: SceneChange = SceneChange::None;
 
         egui::SidePanel::right("chat").show(ctx, |ui| {
             chat_ui(
@@ -460,7 +460,7 @@ impl Scene for HostScene {
             }
 
             if ui.button("End Session").clicked() {
-                result = Some(self.disconnect(app_data.socket.as_mut().unwrap()));
+                result = self.disconnect(app_data.socket.as_mut().unwrap());
             }
         });
 

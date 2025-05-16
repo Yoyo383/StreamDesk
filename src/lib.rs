@@ -248,12 +248,12 @@ pub struct AppData {
 }
 
 pub enum SceneChange {
+    None,
     To(Box<dyn Scene>),
-    Quit,
 }
 
 pub trait Scene {
-    fn update(&mut self, ctx: &egui::Context, app_data: &mut AppData) -> Option<SceneChange>;
+    fn update(&mut self, ctx: &egui::Context, app_data: &mut AppData) -> SceneChange;
     fn on_exit(&mut self, app_data: &mut AppData);
 }
 
