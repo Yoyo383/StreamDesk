@@ -5,7 +5,7 @@ use std::{
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
     },
     thread::{self, JoinHandle},
     time::Instant,
@@ -68,19 +68,25 @@ fn thread_receive_socket(
 
 fn thread_read_decoded(
     mut stdout: ChildStdout,
-    frame_queue: Arc<Mutex<VecDeque<Vec<u8>>>>,
+    frame_queue: Arc<(Mutex<VecDeque<Vec<u8>>>, Condvar)>,
     stop_flag: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
+        let (queue_mutex, condvar) = &*frame_queue;
         let mut rgba_buf = vec![0u8; 1920 * 1080 * 4];
 
         while !stop_flag.load(Ordering::Relaxed) {
             // read exactly one decoded frame
             stdout.read_exact(&mut rgba_buf).unwrap();
 
-            let mut frame_queue = frame_queue.lock().unwrap();
+            let mut queue = queue_mutex.lock().unwrap();
 
-            frame_queue.push_back(rgba_buf.clone());
+            // wait until queue is less than 30
+            while queue.len() >= 30 {
+                queue = condvar.wait(queue).unwrap(); // releases lock while waiting
+            }
+
+            queue.push_back(rgba_buf.clone());
         }
     })
 }
@@ -91,7 +97,7 @@ pub struct WatchScene {
 
     username: String,
 
-    frame_queue: Arc<Mutex<VecDeque<Vec<u8>>>>,
+    frame_queue: Arc<(Mutex<VecDeque<Vec<u8>>>, Condvar)>,
     current_frame: Vec<u8>,
 
     thread_receive_socket: Option<JoinHandle<()>>,
@@ -105,14 +111,14 @@ impl WatchScene {
         let stdin = ffmpeg.stdin.take().unwrap();
         let stdout = ffmpeg.stdout.take().unwrap();
 
-        let frame_queue = Arc::new(Mutex::new(VecDeque::new()));
-        let frame_queue_clone = frame_queue.clone();
+        let frame_queue = Arc::new((Mutex::new(VecDeque::new()), Condvar::new()));
 
         let stop_flag = Arc::new(AtomicBool::new(false));
 
         let thread_receive_socket =
             thread_receive_socket(socket.try_clone().unwrap(), stop_flag.clone(), stdin);
-        let thread_read_decoded = thread_read_decoded(stdout, frame_queue_clone, stop_flag.clone());
+        let thread_read_decoded =
+            thread_read_decoded(stdout, frame_queue.clone(), stop_flag.clone());
 
         Self {
             now: Instant::now(),
@@ -187,9 +193,14 @@ impl Scene for WatchScene {
         if self.elapsed_time > 1.0 / 30.0 {
             self.elapsed_time -= 1.0 / 30.0;
 
-            if let Some(frame) = self.frame_queue.lock().unwrap().pop_front() {
+            let (queue_mutex, condvar) = &*self.frame_queue;
+            let mut queue = queue_mutex.lock().unwrap();
+
+            if let Some(frame) = queue.pop_front() {
                 self.current_frame = frame;
             }
+
+            condvar.notify_all();
         }
 
         egui::TopBottomPanel::bottom("bottom_panel")
