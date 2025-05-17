@@ -42,25 +42,16 @@ fn start_ffmpeg() -> Child {
     ffmpeg
 }
 
-fn thread_receive_socket(
-    mut socket: TcpStream,
-    stop_flag: Arc<AtomicBool>,
-    mut stdin: ChildStdin,
-) -> JoinHandle<()> {
+fn thread_receive_socket(mut socket: TcpStream, mut stdin: ChildStdin) -> JoinHandle<()> {
     thread::spawn(move || loop {
         let packet = Packet::receive(&mut socket).unwrap_or_default();
 
         match packet {
             Packet::Screen { bytes } => {
-                stdin.write_all(&bytes).unwrap();
+                let _ = stdin.write_all(&bytes);
             }
 
-            Packet::SessionExit => {
-                println!("got exit");
-                // signal all threads
-                stop_flag.store(true, Ordering::Relaxed);
-                break;
-            }
+            Packet::SessionExit => break,
 
             _ => (),
         }
@@ -76,15 +67,21 @@ fn thread_read_decoded(
         let (queue_mutex, condvar) = &*frame_queue;
         let mut rgba_buf = vec![0u8; 1920 * 1080 * 4];
 
-        while !stop_flag.load(Ordering::Relaxed) {
+        loop {
             // read exactly one decoded frame
             stdout.read_exact(&mut rgba_buf).unwrap();
 
             let mut queue = queue_mutex.lock().unwrap();
 
-            // wait until queue is less than 30
-            while queue.len() >= 30 {
-                queue = condvar.wait(queue).unwrap(); // releases lock while waiting
+            // wait until queue is less than 30 or stop flag is true
+            queue = condvar
+                .wait_while(queue, |q| {
+                    q.len() >= 30 && !stop_flag.load(Ordering::Relaxed)
+                })
+                .unwrap();
+
+            if stop_flag.load(Ordering::Relaxed) {
+                break;
             }
 
             queue.push_back(rgba_buf.clone());
@@ -97,6 +94,8 @@ pub struct WatchScene {
     elapsed_time: f32,
 
     username: String,
+
+    stop_flag: Arc<AtomicBool>,
 
     frame_queue: Arc<(Mutex<VecDeque<Vec<u8>>>, Condvar)>,
     current_frame: Vec<u8>,
@@ -116,8 +115,7 @@ impl WatchScene {
 
         let stop_flag = Arc::new(AtomicBool::new(false));
 
-        let thread_receive_socket =
-            thread_receive_socket(socket.try_clone().unwrap(), stop_flag.clone(), stdin);
+        let thread_receive_socket = thread_receive_socket(socket.try_clone().unwrap(), stdin);
         let thread_read_decoded =
             thread_read_decoded(stdout, frame_queue.clone(), stop_flag.clone());
 
@@ -126,6 +124,7 @@ impl WatchScene {
             elapsed_time: 0.0,
 
             username,
+            stop_flag,
 
             frame_queue,
             current_frame: vec![0u8; 1920 * 1080 * 4],
@@ -174,7 +173,12 @@ impl WatchScene {
         let session_exit = Packet::SessionExit;
         session_exit.send(socket).unwrap();
 
-        println!("sent exit");
+        self.stop_flag.store(true, Ordering::Relaxed);
+
+        {
+            let (_, condvar) = &*self.frame_queue;
+            condvar.notify_all(); // wake up decoder thread in case it's waiting
+        }
 
         let _ = self.thread_receive_socket.take().unwrap().join();
         let _ = self.thread_read_decoded.take().unwrap().join();
