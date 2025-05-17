@@ -110,6 +110,7 @@ pub enum Packet {
 
     Join {
         code: u32,
+        username: String,
     },
 
     UserUpdate {
@@ -156,6 +157,10 @@ pub enum Packet {
         id: i32,
         name: String,
     },
+
+    DenyJoin {
+        username: String,
+    },
 }
 
 impl Packet {
@@ -186,10 +191,11 @@ impl Packet {
                 result.push(3);
             }
 
-            Packet::Join { code } => {
+            Packet::Join { code, username } => {
                 result.push(4);
 
                 result.extend_from_slice(&code.to_be_bytes());
+                write_length_and_string(&mut result, &username);
             }
 
             Packet::UserUpdate {
@@ -267,6 +273,12 @@ impl Packet {
                 result.extend_from_slice(&id.to_be_bytes());
                 write_length_and_string(&mut result, &name);
             }
+
+            Packet::DenyJoin { username } => {
+                result.push(18);
+
+                write_length_and_string(&mut result, &username);
+            }
         }
 
         result
@@ -310,7 +322,10 @@ impl Packet {
                 socket.read_exact(&mut code_buf)?;
                 let code = u32::from_be_bytes(code_buf);
 
-                Ok(Self::Join { code })
+                let username = String::from_utf8(read_length_and_data(socket)?)
+                    .expect("bytes should be valid utf8");
+
+                Ok(Self::Join { code, username })
             }
 
             // UserUpdate
@@ -422,6 +437,13 @@ impl Packet {
                     .expect("bytes should be valid utf8");
 
                 Ok(Self::RecordingName { id, name })
+            }
+
+            18 => {
+                let username = String::from_utf8(read_length_and_data(socket)?)
+                    .expect("bytes should be valid utf8");
+
+                Ok(Self::DenyJoin { username })
             }
 
             _ => Err(std::io::Error::new(

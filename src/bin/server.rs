@@ -18,6 +18,7 @@ use std::{
     process::{Child, ChildStdout, Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
+        mpsc::{self, Sender},
         Arc, Mutex,
     },
     thread::{self, JoinHandle},
@@ -47,10 +48,12 @@ struct Connection {
     socket: TcpStream,
     connection_type: ConnectionType,
     user_type: UserType,
+    join_request_sender: Option<Sender<bool>>,
 }
 
 struct Session {
     connections: HashMap<String, Connection>,
+    pending_join: HashMap<String, Connection>,
 }
 
 impl Session {
@@ -58,7 +61,10 @@ impl Session {
         let mut connections = HashMap::new();
         connections.insert(host_username, host_conn);
 
-        Self { connections }
+        Self {
+            connections,
+            pending_join: HashMap::new(),
+        }
     }
 
     fn broadcast_all(&mut self, packet: Packet) {
@@ -274,6 +280,55 @@ fn handle_host(
         let packet = Packet::receive(socket).unwrap();
 
         match packet {
+            Packet::Join { username, .. } => {
+                let mut session = session.lock().unwrap();
+
+                if let Some(mut connection) = session.pending_join.remove(&username) {
+                    // notify user they were allowed
+                    let success = ResultPacket::Success("Joining".to_string());
+                    success.send(&mut connection.socket).unwrap();
+
+                    // notify user thread
+                    let _ = connection.join_request_sender.take().unwrap().send(true);
+
+                    // send all usernames
+                    for (username, user_connection) in &session.connections {
+                        let username_packet = Packet::UserUpdate {
+                            user_type: user_connection.user_type,
+                            joined_before: true,
+                            username: username.clone(),
+                        };
+                        username_packet.send(&mut connection.socket).unwrap();
+                    }
+
+                    session.connections.insert(username.clone(), connection);
+
+                    // send new username to all participants
+                    let packet = Packet::UserUpdate {
+                        user_type: UserType::Participant,
+                        joined_before: false,
+                        username: username.clone(),
+                    };
+                    session.broadcast_all(packet);
+                }
+            }
+
+            Packet::DenyJoin { username } => {
+                let mut session = session.lock().unwrap();
+
+                if let Some(connection) = session.pending_join.get_mut(&username) {
+                    // notify user they were denied
+                    let failure = ResultPacket::Failure("You were denied by the host.".to_string());
+                    failure.send(&mut connection.socket).unwrap();
+
+                    // notify user thread
+                    let _ = connection.join_request_sender.take().unwrap().send(false);
+                }
+
+                // remove from pending
+                session.pending_join.remove(&username);
+            }
+
             Packet::Screen { ref bytes } => {
                 stdin.write_all(&bytes).unwrap();
                 let mut session = session.lock().unwrap();
@@ -425,7 +480,7 @@ fn thread_send_screen(
     thread::spawn(move || {
         let mut reader = AnnexBReader::accumulate(|nal: RefNal<'_>| {
             if !nal.is_complete() {
-                return NalInterest::Buffer; // not ready yet
+                return NalInterest::Buffer;
             }
 
             // getting nal unit type
@@ -478,6 +533,8 @@ fn handle_watching(socket: &mut TcpStream, filename: &str) {
         match packet {
             Packet::SessionExit => {
                 stop_flag.store(true, Ordering::Relaxed);
+
+                let _ = ffmpeg.kill();
                 let _ = thread_send_screen.join();
 
                 let packet = Packet::SessionExit;
@@ -549,6 +606,7 @@ fn handle_client(mut socket: TcpStream, sessions: SessionHashMap) {
                         socket: socket.try_clone().unwrap(),
                         connection_type: ConnectionType::Host,
                         user_type: UserType::Host,
+                        join_request_sender: None,
                     };
 
                     let session =
@@ -573,7 +631,7 @@ fn handle_client(mut socket: TcpStream, sessions: SessionHashMap) {
                     );
                 }
 
-                Packet::Join { code } => {
+                Packet::Join { code, ref username } => {
                     let sessions = sessions.lock().unwrap();
 
                     // check if the code exists
@@ -587,37 +645,27 @@ fn handle_client(mut socket: TcpStream, sessions: SessionHashMap) {
                         let success = ResultPacket::Success("Joining".to_owned());
                         success.send(&mut socket).unwrap();
 
-                        // send all usernames
-                        for (username, connection) in &session_guard.connections {
-                            let username_packet = Packet::UserUpdate {
-                                user_type: connection.user_type,
-                                joined_before: true,
-                                username: username.clone(),
-                            };
-                            username_packet.send(&mut socket).unwrap();
-                        }
+                        // send host the join request
+                        packet.send(&mut session_guard.host()).unwrap();
 
-                        // create connection
+                        let (sender, receiver) = mpsc::channel();
+
                         let connection = Connection {
                             socket: socket.try_clone().unwrap(),
                             connection_type: ConnectionType::Unready,
                             user_type: UserType::Participant,
+                            join_request_sender: Some(sender),
                         };
                         session_guard
-                            .connections
+                            .pending_join
                             .insert(username.clone(), connection);
-
-                        // send new username to all participants
-                        let packet = Packet::UserUpdate {
-                            user_type: UserType::Participant,
-                            joined_before: false,
-                            username: username.clone(),
-                        };
-                        session_guard.broadcast_all(packet);
 
                         drop(session_guard);
 
-                        handle_participant(&mut socket, session.clone(), username.clone());
+                        // if host allowed user then continue
+                        if receiver.recv().unwrap() {
+                            handle_participant(&mut socket, session.clone(), username.clone());
+                        }
                     } else {
                         // no such session
                         let failure =

@@ -56,6 +56,7 @@ fn thread_receive_socket(
             }
 
             Packet::SessionExit => {
+                println!("got exit");
                 // signal all threads
                 stop_flag.store(true, Ordering::Relaxed);
                 break;
@@ -172,6 +173,8 @@ impl WatchScene {
     fn exit(&mut self, socket: &mut TcpStream) -> SceneChange {
         let session_exit = Packet::SessionExit;
         session_exit.send(socket).unwrap();
+
+        println!("sent exit");
 
         let _ = self.thread_receive_socket.take().unwrap().join();
         let _ = self.thread_read_decoded.take().unwrap().join();

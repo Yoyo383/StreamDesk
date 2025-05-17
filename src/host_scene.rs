@@ -120,12 +120,18 @@ fn thread_read_socket(
     mut socket: TcpStream,
     usernames: Arc<Mutex<HashMap<String, UserType>>>,
     requesting_control: Arc<Mutex<HashSet<String>>>,
+    requesting_join: Arc<Mutex<HashSet<String>>>,
     chat_log: Arc<Mutex<Vec<String>>>,
 ) -> JoinHandle<()> {
     thread::spawn(move || loop {
         let packet = Packet::receive(&mut socket).unwrap_or_default();
 
         match packet {
+            Packet::Join { username, .. } => {
+                let mut requesting_join = requesting_join.lock().unwrap();
+                requesting_join.insert(username);
+            }
+
             Packet::UserUpdate {
                 user_type,
                 username,
@@ -298,6 +304,7 @@ pub struct HostScene {
     usernames: Arc<Mutex<HashMap<String, UserType>>>,
     username: String,
     requesting_control: Arc<Mutex<HashSet<String>>>,
+    requesting_join: Arc<Mutex<HashSet<String>>>,
 
     chat_log: Arc<Mutex<Vec<String>>>,
     chat_message: String,
@@ -321,8 +328,10 @@ impl HostScene {
 
         let mut usernames_types = HashMap::new();
         usernames_types.insert(username.clone(), UserType::Host);
+
         let usernames = Arc::new(Mutex::new(usernames_types));
         let requesting_control = Arc::new(Mutex::new(HashSet::new()));
+        let requesting_join = Arc::new(Mutex::new(HashSet::new()));
 
         let chat_log = Arc::new(Mutex::new(Vec::new()));
 
@@ -330,6 +339,7 @@ impl HostScene {
             socket.try_clone().unwrap(),
             usernames.clone(),
             requesting_control.clone(),
+            requesting_join.clone(),
             chat_log.clone(),
         );
 
@@ -340,6 +350,7 @@ impl HostScene {
             usernames,
             username,
             requesting_control,
+            requesting_join,
 
             chat_log,
             chat_message: String::new(),
@@ -456,6 +467,41 @@ impl Scene for HostScene {
 
                     // clear requesting users
                     requesting_control.clear();
+                }
+            }
+
+            // requesting join
+            {
+                let mut requesting_join = self.requesting_join.lock().unwrap();
+                let mut user_handled = String::new();
+
+                for user in requesting_join.iter() {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{} is requesting to join.", user));
+
+                        if ui.button("Allow").clicked() {
+                            user_handled = user.to_string();
+
+                            let packet = Packet::Join {
+                                code: 0,
+                                username: user.to_string(),
+                            };
+                            packet.send(app_data.socket.as_mut().unwrap()).unwrap();
+                        }
+
+                        if ui.button("Deny").clicked() {
+                            user_handled = user.to_string();
+
+                            let deny_packet = Packet::DenyJoin {
+                                username: user.to_string(),
+                            };
+                            deny_packet.send(app_data.socket.as_mut().unwrap()).unwrap();
+                        }
+                    });
+                }
+
+                if !user_handled.is_empty() {
+                    requesting_join.remove(&user_handled);
                 }
             }
 

@@ -1,4 +1,9 @@
-use std::{collections::HashMap, net::TcpStream};
+use std::{
+    collections::HashMap,
+    net::TcpStream,
+    sync::mpsc::{self, Receiver},
+    thread,
+};
 
 use eframe::egui::{self, Align, Button, Color32, FontId, Layout, RichText, TextEdit, Ui};
 use remote_desktop::{
@@ -48,6 +53,8 @@ pub struct MenuScene {
     join_fail_message: String,
     username: String,
     recordings: HashMap<i32, String>,
+    join_receiver: Option<Receiver<(bool, String)>>,
+    is_disabled: bool,
 }
 
 impl MenuScene {
@@ -59,6 +66,8 @@ impl MenuScene {
             join_fail_message: String::new(),
             username,
             recordings,
+            join_receiver: None,
+            is_disabled: false,
         }
     }
 
@@ -80,23 +89,35 @@ impl MenuScene {
         )))
     }
 
-    fn join_button(
-        &self,
-        session_code: u32,
-        app_data: &mut AppData,
-    ) -> Result<SceneChange, String> {
+    fn join_button(&mut self, session_code: u32, app_data: &mut AppData) -> Result<String, String> {
         let socket = app_data.socket.as_mut().unwrap();
 
-        let join_message = Packet::Join { code: session_code };
+        let join_message = Packet::Join {
+            code: session_code,
+            username: self.username.clone(),
+        };
         join_message.send(socket).unwrap();
 
         let result = ResultPacket::receive(socket).unwrap();
         match result {
             ResultPacket::Failure(msg) => Err(msg),
-            ResultPacket::Success(_) => Ok(SceneChange::To(Box::new(MainScene::new(
-                app_data,
-                self.username.clone(),
-            )))),
+            ResultPacket::Success(_) => {
+                let mut socket = socket.try_clone().unwrap();
+                let (sender, receiver) = mpsc::channel();
+                self.join_receiver = Some(receiver);
+                self.is_disabled = true;
+
+                thread::spawn(move || {
+                    let result = ResultPacket::receive(&mut socket).unwrap();
+
+                    match result {
+                        ResultPacket::Failure(msg) => sender.send((false, msg)),
+                        ResultPacket::Success(msg) => sender.send((true, msg)),
+                    }
+                });
+
+                Ok("Waiting for the host to approve...".to_string())
+            }
         }
     }
 }
@@ -104,6 +125,26 @@ impl MenuScene {
 impl Scene for MenuScene {
     fn update(&mut self, ctx: &egui::Context, app_data: &mut AppData) -> SceneChange {
         let mut result: SceneChange = SceneChange::None;
+
+        if let Some(join_receiver) = &self.join_receiver {
+            if let Ok((join_result, msg)) = join_receiver.try_recv() {
+                self.is_disabled = false;
+
+                match join_result {
+                    true => {
+                        result = SceneChange::To(Box::new(MainScene::new(
+                            app_data,
+                            self.username.clone(),
+                        )))
+                    }
+
+                    false => {
+                        self.join_fail_message = msg;
+                        self.recordings = receive_recordings(app_data.socket.as_mut().unwrap());
+                    }
+                }
+            }
+        }
 
         egui::TopBottomPanel::top("title_bar").show(ctx, |ui| {
             ui.with_layout(Layout::top_down(Align::Center), |ui| {
@@ -114,6 +155,10 @@ impl Scene for MenuScene {
         egui::TopBottomPanel::bottom("connection_status")
             .resizable(false)
             .show(ctx, |ui| {
+                if self.is_disabled {
+                    ui.disable();
+                }
+
                 ui.add_space(10.0);
 
                 ui.horizontal(|ui| {
@@ -138,6 +183,10 @@ impl Scene for MenuScene {
             });
 
         egui::SidePanel::right("join_panel").show(ctx, |ui| {
+            if self.is_disabled {
+                ui.disable();
+            }
+
             ui.heading("Watch past recordings");
             ui.separator();
 
@@ -148,8 +197,12 @@ impl Scene for MenuScene {
 
                     let result_packet =
                         ResultPacket::receive(app_data.socket.as_mut().unwrap()).unwrap();
+
                     match result_packet {
-                        ResultPacket::Failure(msg) => self.join_fail_message = msg,
+                        ResultPacket::Failure(msg) => {
+                            self.join_fail_message = msg;
+                        }
+
                         ResultPacket::Success(_) => {
                             result = SceneChange::To(Box::new(WatchScene::new(
                                 self.username.clone(),
@@ -162,6 +215,10 @@ impl Scene for MenuScene {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            if self.is_disabled {
+                ui.disable();
+            }
+
             ui.vertical_centered(|ui| {
                 ui.add_space(10.0);
                 ui.label(RichText::new("Join Session").size(20.0));
@@ -178,8 +235,12 @@ impl Scene for MenuScene {
                 if join_button.clicked() {
                     match self.session_code.parse::<u32>() {
                         Ok(session_code) => match self.join_button(session_code, app_data) {
-                            Ok(scene_change) => result = scene_change,
-                            Err(msg) => self.join_fail_message = msg,
+                            Ok(msg) => self.join_fail_message = msg,
+                            Err(msg) => {
+                                self.join_fail_message = msg;
+                                self.recordings =
+                                    receive_recordings(app_data.socket.as_mut().unwrap());
+                            }
                         },
                         Err(_) => {
                             self.join_fail_message =
