@@ -18,6 +18,8 @@ use crate::menu_scene::MenuScene;
 
 const PLAY_IMAGE: ImageSource = egui::include_image!("../images/play.svg");
 const PAUSE_IMAGE: ImageSource = egui::include_image!("../images/pause.svg");
+const FORWARD_IMAGE: ImageSource = egui::include_image!("../images/forward.svg");
+const BACKWARD_IMAGE: ImageSource = egui::include_image!("../images/backward.svg");
 
 fn start_ffmpeg() -> Child {
     let ffmpeg = Command::new("ffmpeg")
@@ -109,8 +111,8 @@ pub struct WatchScene {
     elapsed_time: f32,
 
     username: String,
-    duration: u32,
-    current_frame_number: u32,
+    duration: i32,
+    current_frame_number: i32,
 
     stop_flag: Arc<AtomicBool>,
     is_paused: bool,
@@ -124,7 +126,7 @@ pub struct WatchScene {
 }
 
 impl WatchScene {
-    pub fn new(username: String, duration: u32, socket: &mut TcpStream) -> Self {
+    pub fn new(username: String, duration: i32, socket: &mut TcpStream) -> Self {
         let mut ffmpeg = start_ffmpeg();
         let stdin = ffmpeg.stdin.take().unwrap();
         let stdout = ffmpeg.stdout.take().unwrap();
@@ -189,6 +191,48 @@ impl WatchScene {
         let stroke = Stroke::new(1.0, Color32::WHITE);
         ui.painter()
             .rect_stroke(centered_rect, 0.0, stroke, egui::StrokeKind::Outside);
+    }
+
+    fn seek_recording(&mut self, delta: i32, socket: &mut TcpStream) {
+        // send seek init
+        Packet::SeekInit.send(socket).unwrap();
+
+        // stop everything
+        self.stop_flag.store(true, Ordering::Relaxed);
+
+        {
+            let (queue, condvar) = &*self.frame_queue;
+            let mut queue = queue.lock().unwrap();
+            queue.clear(); // clear old frames
+            condvar.notify_all();
+        }
+
+        let _ = self.thread_receive_socket.take().unwrap().join();
+        let _ = self.thread_read_decoded.take().unwrap().join();
+        let _ = self.ffmpeg_command.kill();
+
+        // send seek to
+        let time_seconds = (self.current_frame_number / 30 + delta).clamp(0, self.duration / 30);
+        self.current_frame_number = time_seconds * 30;
+
+        let seek_to = Packet::SeekTo { time_seconds };
+        seek_to.send(socket).unwrap();
+
+        // start everything from scratch
+
+        self.ffmpeg_command = start_ffmpeg();
+        let stdin = self.ffmpeg_command.stdin.take().unwrap();
+        let stdout = self.ffmpeg_command.stdout.take().unwrap();
+
+        self.stop_flag.store(false, Ordering::Relaxed);
+
+        self.thread_receive_socket =
+            Some(thread_receive_socket(socket.try_clone().unwrap(), stdin));
+        self.thread_read_decoded = Some(thread_read_decoded(
+            stdout,
+            self.frame_queue.clone(),
+            self.stop_flag.clone(),
+        ));
     }
 
     fn exit(&mut self, socket: &mut TcpStream) -> SceneChange {
@@ -266,10 +310,37 @@ impl Scene for WatchScene {
                     if response.hovered() {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                     }
-
                     // toggle pause
                     if response.clicked() {
                         self.is_paused = !self.is_paused;
+                    }
+
+                    let skip_backward_button = egui::Button::image(BACKWARD_IMAGE).frame(false);
+                    let response = ui.add_sized([30.0, 30.0], skip_backward_button);
+
+                    // change cursor to hand
+                    if response.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    // skip forward 5 seconds
+                    if response.clicked() {
+                        let socket = app_data.socket.as_mut().unwrap();
+
+                        self.seek_recording(-5, socket);
+                    }
+
+                    let skip_forward_button = egui::Button::image(FORWARD_IMAGE).frame(false);
+                    let response = ui.add_sized([30.0, 30.0], skip_forward_button);
+
+                    // change cursor to hand
+                    if response.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    // skip forward 5 seconds
+                    if response.clicked() {
+                        let socket = app_data.socket.as_mut().unwrap();
+
+                        self.seek_recording(5, socket);
                     }
 
                     ui.label(time_string);

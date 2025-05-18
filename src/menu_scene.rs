@@ -213,7 +213,7 @@ impl Scene for MenuScene {
                         }
 
                         ResultPacket::Success(duration) => {
-                            let duration: u32 = duration.parse().expect("duration should be u32");
+                            let duration: i32 = duration.parse().expect("duration should be i32");
                             result = SceneChange::To(Box::new(WatchScene::new(
                                 self.username.clone(),
                                 duration,

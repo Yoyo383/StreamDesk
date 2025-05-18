@@ -116,11 +116,13 @@ fn ffmpeg_save_recording(filename: &str) -> Child {
     ffmpeg
 }
 
-fn ffmpeg_send_recording(filename: &str) -> Child {
+fn ffmpeg_send_recording(filename: &str, time_seconds: i32) -> Child {
     let input_path = PathBuf::from(RECORDINGS_FOLDER).join(format!("{filename}.mp4"));
 
     let ffmpeg = Command::new("ffmpeg")
         .args(&[
+            "-ss",
+            &time_seconds.to_string(),
             "-i",
             input_path.to_str().unwrap(),
             "-vcodec",
@@ -129,10 +131,8 @@ fn ffmpeg_send_recording(filename: &str) -> Child {
             "ultrafast",
             "-tune",
             "zerolatency",
-            "-x264opts",
-            "no-scenecut",
-            "-sc_threshold",
-            "0",
+            "-force_key_frames",
+            "expr:gte(t,0)", // Force keyframe at the beginning
             "-f",
             "h264",
             "-",
@@ -145,7 +145,7 @@ fn ffmpeg_send_recording(filename: &str) -> Child {
     ffmpeg
 }
 
-fn get_duration_frames(filename: &str) -> u32 {
+fn get_duration_frames(filename: &str) -> i32 {
     let input_path = PathBuf::from(RECORDINGS_FOLDER).join(format!("{filename}.mp4"));
 
     let output = Command::new("ffprobe")
@@ -169,7 +169,7 @@ fn get_duration_frames(filename: &str) -> u32 {
         .parse::<f64>()
         .expect("should be valid f64");
 
-    (seconds * 30.0).ceil() as u32
+    (seconds * 30.0).ceil() as i32
 }
 
 fn generate_session_code(sessions: &HashMap<u32, SharedSession>) -> u32 {
@@ -561,23 +561,49 @@ fn thread_send_screen(
 }
 
 fn handle_watching(socket: &mut TcpStream, filename: &str) {
-    let mut ffmpeg = ffmpeg_send_recording(filename);
-    let stdout = ffmpeg.stdout.take().unwrap();
+    let mut ffmpeg = ffmpeg_send_recording(filename, 0);
+    let mut stdout = ffmpeg.stdout.take().unwrap();
 
-    let stop_flag = Arc::new(AtomicBool::new(false));
+    let mut stop_flag = Arc::new(AtomicBool::new(false));
 
-    let thread_send_screen =
-        thread_send_screen(socket.try_clone().unwrap(), stdout, stop_flag.clone());
+    let mut thread_send = Some(thread_send_screen(
+        socket.try_clone().unwrap(),
+        stdout,
+        stop_flag.clone(),
+    ));
 
     loop {
         let packet = Packet::receive(socket).unwrap();
 
         match packet {
+            Packet::SeekInit => {
+                // Kill current ffmpeg and thread
+                stop_flag.store(true, Ordering::Relaxed);
+                let _ = ffmpeg.kill();
+                let _ = thread_send.take().unwrap().join();
+
+                // send session exit
+                let packet = Packet::SessionExit;
+                packet.send(socket).unwrap();
+            }
+
+            Packet::SeekTo { time_seconds } => {
+                // Restart with seek
+                ffmpeg = ffmpeg_send_recording(filename, time_seconds);
+                stdout = ffmpeg.stdout.take().unwrap();
+                stop_flag = Arc::new(AtomicBool::new(false));
+                thread_send = Some(thread_send_screen(
+                    socket.try_clone().unwrap(),
+                    stdout,
+                    stop_flag.clone(),
+                ));
+            }
+
             Packet::SessionExit => {
                 stop_flag.store(true, Ordering::Relaxed);
 
                 let _ = ffmpeg.kill();
-                let _ = thread_send_screen.join();
+                let _ = thread_send.take().unwrap().join();
 
                 let packet = Packet::SessionExit;
                 packet.send(socket).unwrap();

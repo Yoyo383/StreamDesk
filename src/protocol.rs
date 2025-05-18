@@ -161,6 +161,12 @@ pub enum Packet {
     DenyJoin {
         username: String,
     },
+
+    SeekInit,
+
+    SeekTo {
+        time_seconds: i32,
+    },
 }
 
 impl Packet {
@@ -278,6 +284,16 @@ impl Packet {
                 result.push(18);
 
                 write_length_and_string(&mut result, &username);
+            }
+
+            Packet::SeekInit => {
+                result.push(19);
+            }
+
+            Packet::SeekTo { time_seconds } => {
+                result.push(20);
+
+                result.extend_from_slice(&time_seconds.to_be_bytes());
             }
         }
 
@@ -444,6 +460,16 @@ impl Packet {
                     .expect("bytes should be valid utf8");
 
                 Ok(Self::DenyJoin { username })
+            }
+
+            19 => Ok(Self::SeekInit),
+
+            20 => {
+                let mut time_seconds_buf = [0u8; 4];
+                socket.read_exact(&mut time_seconds_buf).unwrap();
+                let time_seconds = i32::from_be_bytes(time_seconds_buf);
+
+                Ok(Self::SeekTo { time_seconds })
             }
 
             _ => Err(std::io::Error::new(
