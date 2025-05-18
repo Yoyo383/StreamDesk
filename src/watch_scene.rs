@@ -23,6 +23,8 @@ fn start_ffmpeg() -> Child {
             "low_delay",
             "-fflags",
             "discardcorrupt",
+            "-fflags",
+            "nobuffer",
             "-f",
             "h264",
             "-i",

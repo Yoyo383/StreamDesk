@@ -1,4 +1,4 @@
-use chrono::{DateTime, Local};
+use chrono::Local;
 use h264_reader::{
     annexb::AnnexBReader,
     nal::{Nal, RefNal},
@@ -11,7 +11,7 @@ use remote_desktop::{
 };
 use rusqlite::{ffi::SQLITE_CONSTRAINT_UNIQUE, params, Error::SqliteFailure};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     path::PathBuf,
@@ -194,6 +194,7 @@ fn login_or_register(
     packet: Packet,
     socket: &mut TcpStream,
     conn: &rusqlite::Connection,
+    logged_in_users: Arc<Mutex<HashSet<String>>>,
 ) -> Option<(String, i32, HashMap<i32, Recording>)> {
     match packet {
         Packet::Shutdown => None,
@@ -207,12 +208,21 @@ fn login_or_register(
 
             match user_id_result {
                 Ok(user_id) => {
-                    let result = ResultPacket::Success("Signing in".to_owned());
-                    result.send(socket).unwrap();
+                    if !logged_in_users.lock().unwrap().contains(&username) {
+                        logged_in_users.lock().unwrap().insert(username.clone());
 
-                    let recordings = query_recordings(&conn, user_id);
+                        let result = ResultPacket::Success("Signing in".to_owned());
+                        result.send(socket).unwrap();
 
-                    Some((username, user_id, recordings))
+                        let recordings = query_recordings(&conn, user_id);
+
+                        Some((username, user_id, recordings))
+                    } else {
+                        let result =
+                            ResultPacket::Failure("User already logged in elsewhere.".to_owned());
+                        result.send(socket).unwrap();
+                        None
+                    }
                 }
                 Err(rusqlite::Error::QueryReturnedNoRows) => {
                     let result =
@@ -236,6 +246,8 @@ fn login_or_register(
 
             match inserted {
                 Ok(_) => {
+                    logged_in_users.lock().unwrap().insert(username.clone());
+
                     let result = ResultPacket::Success("Signing in".to_owned());
                     result.send(socket).unwrap();
 
@@ -548,7 +560,11 @@ fn handle_watching(socket: &mut TcpStream, filename: &str) {
     }
 }
 
-fn handle_client(mut socket: TcpStream, sessions: SessionHashMap) {
+fn handle_client(
+    mut socket: TcpStream,
+    sessions: SessionHashMap,
+    logged_in_users: Arc<Mutex<HashSet<String>>>,
+) {
     let conn = rusqlite::Connection::open(DATABASE_FILE).unwrap();
     let mut username: String;
     let mut user_id: i32;
@@ -565,7 +581,7 @@ fn handle_client(mut socket: TcpStream, sessions: SessionHashMap) {
                 return;
             }
 
-            let result = login_or_register(packet, &mut socket, &conn);
+            let result = login_or_register(packet, &mut socket, &conn, logged_in_users.clone());
             if let Some((user, id, records)) = result {
                 username = user;
                 user_id = id;
@@ -577,12 +593,9 @@ fn handle_client(mut socket: TcpStream, sessions: SessionHashMap) {
         loop {
             // send all recordings
             for (id, recording) in &recordings {
-                let time: DateTime<Local> = recording.time.parse().unwrap();
-                let recording_display_name = time.format("%B %-d, %Y | %T").to_string();
-
                 let packet = Packet::RecordingName {
                     id: *id,
-                    name: recording_display_name,
+                    name: recording.time.clone(),
                 };
                 packet.send(&mut socket).unwrap();
             }
@@ -594,7 +607,8 @@ fn handle_client(mut socket: TcpStream, sessions: SessionHashMap) {
 
             match packet {
                 Packet::SignOut => {
-                    username.clear();
+                    logged_in_users.lock().unwrap().remove(&username);
+
                     break;
                 }
 
@@ -725,12 +739,14 @@ fn main() {
     let listener = TcpListener::bind("0.0.0.0:7643").expect("Could not bind listener");
 
     let sessions: SessionHashMap = Arc::new(Mutex::new(HashMap::new()));
+    let logged_in_users = Arc::new(Mutex::new(HashSet::<String>::new()));
 
     for connection in listener.incoming() {
         match connection {
             Ok(socket) => {
                 let sessions_clone = sessions.clone();
-                thread::spawn(move || handle_client(socket, sessions_clone));
+                let logged_in_users_clone = logged_in_users.clone();
+                thread::spawn(move || handle_client(socket, sessions_clone, logged_in_users_clone));
             }
             Err(e) => eprintln!("Couldn't accept client: {e:?}"),
         }

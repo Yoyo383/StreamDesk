@@ -5,6 +5,7 @@ use std::{
     thread,
 };
 
+use chrono::{DateTime, Local};
 use eframe::egui::{self, Align, Button, Color32, FontId, Layout, RichText, TextEdit, Ui};
 use remote_desktop::{
     protocol::{Packet, ResultPacket},
@@ -190,8 +191,16 @@ impl Scene for MenuScene {
             ui.heading("Watch past recordings");
             ui.separator();
 
-            for (id, recording) in &self.recordings {
-                if ui.button(recording).clicked() {
+            let mut recordings: Vec<(&i32, &String)> = self.recordings.iter().collect();
+
+            // sort by the time (in reverse, newest one first)
+            recordings.sort_by(|a, b| b.1.cmp(a.1));
+
+            for (id, recording) in recordings {
+                let time: DateTime<Local> = recording.parse().unwrap();
+                let recording_display_name = time.format("%B %-d, %Y | %T").to_string();
+
+                if ui.button(recording_display_name).clicked() {
                     let packet = Packet::WatchRecording { id: *id };
                     packet.send(app_data.socket.as_mut().unwrap()).unwrap();
 
