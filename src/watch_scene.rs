@@ -23,8 +23,6 @@ fn start_ffmpeg() -> Child {
             "low_delay",
             "-fflags",
             "discardcorrupt",
-            "-fflags",
-            "nobuffer",
             "-f",
             "h264",
             "-i",
@@ -63,7 +61,6 @@ fn thread_receive_socket(mut socket: TcpStream, mut stdin: ChildStdin) -> JoinHa
 fn thread_read_decoded(
     mut stdout: ChildStdout,
     frame_queue: Arc<(Mutex<VecDeque<Vec<u8>>>, Condvar)>,
-    current_frame_number: Arc<Mutex<u32>>,
     stop_flag: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
@@ -88,8 +85,6 @@ fn thread_read_decoded(
             }
 
             queue.push_back(rgba_buf.clone());
-            let mut current_frame_number = current_frame_number.lock().unwrap();
-            *current_frame_number += 1;
         }
     })
 }
@@ -100,7 +95,7 @@ pub struct WatchScene {
 
     username: String,
     duration: u32,
-    current_frame_number: Arc<Mutex<u32>>,
+    current_frame_number: u32,
 
     stop_flag: Arc<AtomicBool>,
 
@@ -120,17 +115,11 @@ impl WatchScene {
 
         let frame_queue = Arc::new((Mutex::new(VecDeque::new()), Condvar::new()));
 
-        let current_frame_number = Arc::new(Mutex::new(0));
-
         let stop_flag = Arc::new(AtomicBool::new(false));
 
         let thread_receive_socket = thread_receive_socket(socket.try_clone().unwrap(), stdin);
-        let thread_read_decoded = thread_read_decoded(
-            stdout,
-            frame_queue.clone(),
-            current_frame_number.clone(),
-            stop_flag.clone(),
-        );
+        let thread_read_decoded =
+            thread_read_decoded(stdout, frame_queue.clone(), stop_flag.clone());
 
         Self {
             now: Instant::now(),
@@ -138,7 +127,7 @@ impl WatchScene {
 
             username,
             duration,
-            current_frame_number,
+            current_frame_number: 0,
 
             stop_flag,
 
@@ -221,6 +210,8 @@ impl Scene for WatchScene {
 
             if let Some(frame) = queue.pop_front() {
                 self.current_frame = frame;
+
+                self.current_frame_number += 1;
             }
 
             condvar.notify_all();
@@ -235,11 +226,10 @@ impl Scene for WatchScene {
                     }
                 });
 
-                let current_frame = self.current_frame_number.lock().unwrap();
                 let current_time = format!(
                     "{:02}:{:02}",
-                    *current_frame / 1800,
-                    (*current_frame % 1800) / 30
+                    self.current_frame_number / 1800,
+                    (self.current_frame_number % 1800) / 30
                 );
 
                 let total_time = format!(
