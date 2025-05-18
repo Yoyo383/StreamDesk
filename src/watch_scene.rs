@@ -110,6 +110,7 @@ pub struct WatchScene {
     current_frame_number: u32,
 
     stop_flag: Arc<AtomicBool>,
+    is_paused: bool,
 
     frame_queue: Arc<(Mutex<VecDeque<Vec<u8>>>, Condvar)>,
     current_frame: Vec<u8>,
@@ -142,6 +143,7 @@ impl WatchScene {
             current_frame_number: 0,
 
             stop_flag,
+            is_paused: false,
 
             frame_queue,
             current_frame: vec![0u8; 1920 * 1080 * 4],
@@ -214,8 +216,8 @@ impl Scene for WatchScene {
         self.now = now;
         self.elapsed_time += dt;
 
-        if self.elapsed_time > 1.0 / 30.0 {
-            self.elapsed_time -= 1.0 / 30.0;
+        if self.elapsed_time > 1.0 / 30.0 && !self.is_paused {
+            self.elapsed_time = 0.0;
 
             let (queue_mutex, condvar) = &*self.frame_queue;
             let mut queue = queue_mutex.lock().unwrap();
@@ -232,12 +234,6 @@ impl Scene for WatchScene {
         egui::TopBottomPanel::bottom("bottom_panel")
             .resizable(false)
             .show(ctx, |ui| {
-                ui.vertical_centered(|ui| {
-                    if ui.button("Exit").clicked() {
-                        result = self.exit(app_data.socket.as_mut().unwrap());
-                    }
-                });
-
                 let current_time = format!(
                     "{:02}:{:02}",
                     self.current_frame_number / 1800,
@@ -254,9 +250,21 @@ impl Scene for WatchScene {
                 let progress = self.current_frame_number as f32 / self.duration as f32;
 
                 ui.horizontal(|ui| {
+                    if ui
+                        .button(if self.is_paused { "Play" } else { "Pause" })
+                        .clicked()
+                    {
+                        self.is_paused = !self.is_paused;
+                    }
                     ui.label(time_string);
                     let progress_bar = egui::ProgressBar::new(progress);
                     ui.add(progress_bar);
+                });
+
+                ui.vertical_centered(|ui| {
+                    if ui.button("Exit").clicked() {
+                        result = self.exit(app_data.socket.as_mut().unwrap());
+                    }
                 });
             });
 
