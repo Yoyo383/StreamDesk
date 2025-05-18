@@ -42,18 +42,28 @@ fn start_ffmpeg() -> Child {
     ffmpeg
 }
 
-fn thread_receive_socket(mut socket: TcpStream, mut stdin: ChildStdin) -> JoinHandle<()> {
-    thread::spawn(move || loop {
-        let packet = Packet::receive(&mut socket).unwrap_or_default();
+fn thread_receive_socket(mut socket: TcpStream, stdin: ChildStdin) -> JoinHandle<()> {
+    thread::spawn(move || {
+        let mut stdin = Some(stdin);
 
-        match packet {
-            Packet::Screen { bytes } => {
-                let _ = stdin.write_all(&bytes);
+        loop {
+            let packet = Packet::receive(&mut socket).unwrap_or_default();
+
+            match packet {
+                Packet::Screen { bytes } => {
+                    if let Some(ref mut stdin) = stdin {
+                        let _ = stdin.write_all(&bytes);
+                    }
+                }
+
+                Packet::None => {
+                    stdin = None;
+                }
+
+                Packet::SessionExit => break,
+
+                _ => (),
             }
-
-            Packet::SessionExit => break,
-
-            _ => (),
         }
     })
 }
@@ -69,7 +79,9 @@ fn thread_read_decoded(
 
         loop {
             // read exactly one decoded frame
-            stdout.read_exact(&mut rgba_buf).unwrap();
+            let Ok(()) = stdout.read_exact(&mut rgba_buf) else {
+                return;
+            };
 
             let mut queue = queue_mutex.lock().unwrap();
 
@@ -239,7 +251,13 @@ impl Scene for WatchScene {
                 );
 
                 let time_string = format!("{} / {}", current_time, total_time);
-                ui.label(time_string);
+                let progress = self.current_frame_number as f32 / self.duration as f32;
+
+                ui.horizontal(|ui| {
+                    ui.label(time_string);
+                    let progress_bar = egui::ProgressBar::new(progress);
+                    ui.add(progress_bar);
+                });
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {

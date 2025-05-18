@@ -554,6 +554,9 @@ fn thread_send_screen(
                 }
             }
         }
+
+        let none = Packet::None;
+        none.send(&mut socket).unwrap();
     })
 }
 
