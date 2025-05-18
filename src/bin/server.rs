@@ -145,6 +145,33 @@ fn ffmpeg_send_recording(filename: &str) -> Child {
     ffmpeg
 }
 
+fn get_duration_frames(filename: &str) -> u32 {
+    let input_path = PathBuf::from(RECORDINGS_FOLDER).join(format!("{filename}.mp4"));
+
+    let output = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            input_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Error launching ffprobe.");
+
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    let seconds = output_str
+        .trim()
+        .parse::<f64>()
+        .expect("should be valid f64");
+
+    (seconds * 30.0).ceil() as u32
+}
+
 fn generate_session_code(sessions: &HashMap<u32, SharedSession>) -> u32 {
     let mut rng = rand::rng();
     loop {
@@ -692,7 +719,8 @@ fn handle_client(
                     let recording = recordings.get(&id);
                     match recording {
                         Some(recording) => {
-                            let success = ResultPacket::Success("Watching".to_owned());
+                            let num_of_frames = get_duration_frames(&recording.filename);
+                            let success = ResultPacket::Success(num_of_frames.to_string());
                             success.send(&mut socket).unwrap();
 
                             handle_watching(&mut socket, &recording.filename);

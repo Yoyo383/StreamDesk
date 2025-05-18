@@ -63,6 +63,7 @@ fn thread_receive_socket(mut socket: TcpStream, mut stdin: ChildStdin) -> JoinHa
 fn thread_read_decoded(
     mut stdout: ChildStdout,
     frame_queue: Arc<(Mutex<VecDeque<Vec<u8>>>, Condvar)>,
+    current_frame_number: Arc<Mutex<u32>>,
     stop_flag: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
@@ -87,6 +88,8 @@ fn thread_read_decoded(
             }
 
             queue.push_back(rgba_buf.clone());
+            let mut current_frame_number = current_frame_number.lock().unwrap();
+            *current_frame_number += 1;
         }
     })
 }
@@ -96,6 +99,8 @@ pub struct WatchScene {
     elapsed_time: f32,
 
     username: String,
+    duration: u32,
+    current_frame_number: Arc<Mutex<u32>>,
 
     stop_flag: Arc<AtomicBool>,
 
@@ -108,24 +113,33 @@ pub struct WatchScene {
 }
 
 impl WatchScene {
-    pub fn new(username: String, socket: &mut TcpStream) -> Self {
+    pub fn new(username: String, duration: u32, socket: &mut TcpStream) -> Self {
         let mut ffmpeg = start_ffmpeg();
         let stdin = ffmpeg.stdin.take().unwrap();
         let stdout = ffmpeg.stdout.take().unwrap();
 
         let frame_queue = Arc::new((Mutex::new(VecDeque::new()), Condvar::new()));
 
+        let current_frame_number = Arc::new(Mutex::new(0));
+
         let stop_flag = Arc::new(AtomicBool::new(false));
 
         let thread_receive_socket = thread_receive_socket(socket.try_clone().unwrap(), stdin);
-        let thread_read_decoded =
-            thread_read_decoded(stdout, frame_queue.clone(), stop_flag.clone());
+        let thread_read_decoded = thread_read_decoded(
+            stdout,
+            frame_queue.clone(),
+            current_frame_number.clone(),
+            stop_flag.clone(),
+        );
 
         Self {
             now: Instant::now(),
             elapsed_time: 0.0,
 
             username,
+            duration,
+            current_frame_number,
+
             stop_flag,
 
             frame_queue,
@@ -220,6 +234,22 @@ impl Scene for WatchScene {
                         result = self.exit(app_data.socket.as_mut().unwrap());
                     }
                 });
+
+                let current_frame = self.current_frame_number.lock().unwrap();
+                let current_time = format!(
+                    "{:02}:{:02}",
+                    *current_frame / 1800,
+                    (*current_frame % 1800) / 30
+                );
+
+                let total_time = format!(
+                    "{:02}:{:02}",
+                    self.duration / 1800,
+                    (self.duration % 1800) / 30
+                );
+
+                let time_string = format!("{} / {}", current_time, total_time);
+                ui.label(time_string);
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {

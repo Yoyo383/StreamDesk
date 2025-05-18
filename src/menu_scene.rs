@@ -212,9 +212,11 @@ impl Scene for MenuScene {
                             self.join_fail_message = msg;
                         }
 
-                        ResultPacket::Success(_) => {
+                        ResultPacket::Success(duration) => {
+                            let duration: u32 = duration.parse().expect("duration should be u32");
                             result = SceneChange::To(Box::new(WatchScene::new(
                                 self.username.clone(),
+                                duration,
                                 app_data.socket.as_mut().unwrap(),
                             )));
                         }
