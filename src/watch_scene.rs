@@ -11,10 +11,13 @@ use std::{
     time::Instant,
 };
 
-use eframe::egui::{self, pos2, Color32, Rect, Sense, Stroke, Ui, Vec2};
+use eframe::egui::{self, pos2, Color32, ImageSource, Rect, Sense, Stroke, Ui, Vec2};
 use remote_desktop::{protocol::Packet, AppData, Scene, SceneChange};
 
 use crate::menu_scene::MenuScene;
+
+const PLAY_IMAGE: ImageSource = egui::include_image!("../images/play.svg");
+const PAUSE_IMAGE: ImageSource = egui::include_image!("../images/pause.svg");
 
 fn start_ffmpeg() -> Child {
     let ffmpeg = Command::new("ffmpeg")
@@ -250,12 +253,25 @@ impl Scene for WatchScene {
                 let progress = self.current_frame_number as f32 / self.duration as f32;
 
                 ui.horizontal(|ui| {
-                    if ui
-                        .button(if self.is_paused { "Play" } else { "Pause" })
-                        .clicked()
-                    {
+                    let pause_play_button = egui::Button::image(if self.is_paused {
+                        PLAY_IMAGE
+                    } else {
+                        PAUSE_IMAGE
+                    })
+                    .frame(false);
+
+                    let response = ui.add_sized([30.0, 30.0], pause_play_button);
+
+                    // change cursor to hand
+                    if response.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+
+                    // toggle pause
+                    if response.clicked() {
                         self.is_paused = !self.is_paused;
                     }
+
                     ui.label(time_string);
                     let progress_bar = egui::ProgressBar::new(progress);
                     ui.add(progress_bar);
@@ -277,6 +293,8 @@ impl Scene for WatchScene {
 
     fn on_exit(&mut self, app_data: &mut AppData) {
         let socket = app_data.socket.as_mut().unwrap();
+
+        self.exit(socket);
 
         let signout_packet = Packet::SignOut;
         signout_packet.send(socket).unwrap();

@@ -69,6 +69,9 @@ fn main() {
     let _ = eframe::run_native(
         "Screen Capture",
         options,
-        Box::new(move |_| Ok(Box::new(MyApp::new()))),
+        Box::new(move |cc| {
+            egui_extras::install_image_loaders(&cc.egui_ctx);
+            Ok(Box::new(MyApp::new()))
+        }),
     );
 }
