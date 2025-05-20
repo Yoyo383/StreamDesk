@@ -3,7 +3,7 @@ use std::{net::TcpStream, sync::mpsc::Receiver};
 use eframe::egui::{self, Align, Color32, FontId, Layout, RichText, SelectableLabel, TextEdit};
 use remote_desktop::{
     protocol::{Packet, ResultPacket},
-    AppData, Scene, SceneChange,
+    Scene, SceneChange,
 };
 
 use crate::menu_scene::MenuScene;
@@ -124,13 +124,13 @@ impl LoginScene {
 }
 
 impl Scene for LoginScene {
-    fn update(&mut self, ctx: &egui::Context, app_data: &mut AppData) -> SceneChange {
+    fn update(&mut self, ctx: &egui::Context, socket: &mut TcpStream) -> SceneChange {
         let mut result: SceneChange = SceneChange::None;
 
         if !self.connected_to_server {
             match self.socket_receiver.as_ref().unwrap().try_recv() {
-                Ok(Some(socket)) => {
-                    app_data.socket = Some(socket);
+                Ok(Some(new_socket)) => {
+                    *socket = new_socket;
                     self.connected_to_server = true;
                 }
                 Ok(None) => self.failed_to_connect = true,
@@ -218,7 +218,7 @@ impl Scene for LoginScene {
                         )
                         .clicked()
                     {
-                        result = self.login(app_data.socket.as_mut().unwrap());
+                        result = self.login(socket);
                     }
 
                     ui.add_space(10.0);
@@ -261,7 +261,7 @@ impl Scene for LoginScene {
                         )
                         .clicked()
                     {
-                        result = self.register(app_data.socket.as_mut().unwrap());
+                        result = self.register(socket);
                     }
 
                     ui.add_space(10.0);
@@ -277,9 +277,7 @@ impl Scene for LoginScene {
         result
     }
 
-    fn on_exit(&mut self, app_data: &mut AppData) {
-        let socket = app_data.socket.as_mut().unwrap();
-
+    fn on_exit(&mut self, socket: &mut TcpStream) {
         let shutdown_packet = Packet::Shutdown;
         shutdown_packet.send(socket).unwrap();
 

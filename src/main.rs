@@ -4,7 +4,7 @@ use std::thread;
 
 use eframe::{egui, NativeOptions};
 use login_scene::LoginScene;
-use remote_desktop::{AppData, Scene, SceneChange};
+use remote_desktop::{Scene, SceneChange};
 
 mod host_scene;
 mod login_scene;
@@ -21,14 +21,12 @@ fn connect_to_server(sender: Sender<Option<TcpStream>>) {
 }
 
 struct MyApp {
-    data: AppData,
+    socket: Option<TcpStream>,
     scene: Box<dyn Scene>,
 }
 
 impl MyApp {
     fn new() -> Self {
-        let data: AppData = AppData { socket: None };
-
         let (sender, receiver) = mpsc::channel();
         connect_to_server(sender);
 
@@ -36,7 +34,7 @@ impl MyApp {
         let login = LoginScene::new(Some(receiver), false);
 
         Self {
-            data,
+            socket: None,
             scene: Box::new(login),
         }
     }
@@ -44,7 +42,10 @@ impl MyApp {
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let scene_change = self.scene.as_mut().update(ctx, &mut self.data);
+        let scene_change = self
+            .scene
+            .as_mut()
+            .update(ctx, &mut self.socket.as_mut().unwrap());
         match scene_change {
             SceneChange::To(scene) => self.scene = scene,
             _ => (),
@@ -54,7 +55,9 @@ impl eframe::App for MyApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.scene.as_mut().on_exit(&mut self.data);
+        self.scene
+            .as_mut()
+            .on_exit(&mut self.socket.as_mut().unwrap());
     }
 }
 

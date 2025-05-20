@@ -1,8 +1,7 @@
 use eframe::egui::{self, pos2, Color32, Rect, Sense, Stroke, Ui, Vec2};
 use remote_desktop::protocol::{ControlPayload, Packet};
 use remote_desktop::{
-    chat_ui, egui_key_to_vk, normalize_mouse_position, users_list, AppData, Scene, SceneChange,
-    UserType,
+    chat_ui, egui_key_to_vk, normalize_mouse_position, users_list, Scene, SceneChange, UserType,
 };
 
 use crate::{menu_scene::MenuScene, modifiers_state::ModifiersState};
@@ -172,7 +171,7 @@ pub struct MainScene {
 }
 
 impl MainScene {
-    pub fn new(app_data: &mut AppData, username: String) -> Self {
+    pub fn new(socket: &mut TcpStream, username: String) -> Self {
         let mut ffmpeg = start_ffmpeg();
         let stdin = ffmpeg.stdin.take().unwrap();
         let stdout = ffmpeg.stdout.take().unwrap();
@@ -188,7 +187,7 @@ impl MainScene {
         let chat_log = Arc::new(Mutex::new(Vec::new()));
 
         let thread_receive_socket = thread_receive_socket(
-            app_data.socket.as_mut().unwrap().try_clone().unwrap(),
+            socket.try_clone().unwrap(),
             stdin,
             stop_flag.clone(),
             usernames.clone(),
@@ -225,10 +224,8 @@ impl MainScene {
         }
     }
 
-    fn handle_input(&mut self, input: &egui::InputState, app_data: &mut AppData) {
+    fn handle_input(&mut self, input: &egui::InputState, socket: &mut TcpStream) {
         self.modifiers_state.update(input);
-
-        let socket = app_data.socket.as_mut().unwrap();
 
         for key in &self.modifiers_state.keys {
             let key_packet = Packet::Control {
@@ -302,7 +299,7 @@ impl MainScene {
         }
     }
 
-    fn central_panel_ui(&mut self, ui: &mut Ui, ctx: &egui::Context, app_data: &mut AppData) {
+    fn central_panel_ui(&mut self, ui: &mut Ui, ctx: &egui::Context, socket: &mut TcpStream) {
         let texture = egui::ColorImage::from_rgba_unmultiplied([1920, 1080], &self.current_frame);
         let handle = ctx.load_texture("screen", texture, egui::TextureOptions::default());
 
@@ -339,7 +336,7 @@ impl MainScene {
         // make sure the user is the controller before handling input
         if response.hovered() && self.control_msg.lock().unwrap().as_str() == CONTROLLING_MSG {
             ui.ctx().memory_mut(|mem| mem.request_focus(egui::Id::NULL));
-            ui.input(|input| self.handle_input(input, app_data));
+            ui.input(|input| self.handle_input(input, socket));
         }
     }
 
@@ -356,7 +353,7 @@ impl MainScene {
 }
 
 impl Scene for MainScene {
-    fn update(&mut self, ctx: &egui::Context, app_data: &mut AppData) -> SceneChange {
+    fn update(&mut self, ctx: &egui::Context, socket: &mut TcpStream) -> SceneChange {
         let mut result: SceneChange = SceneChange::None;
 
         let now = Instant::now();
@@ -376,10 +373,7 @@ impl Scene for MainScene {
             let _ = self.thread_receive_socket.take().unwrap().join();
             let _ = self.thread_read_decoded.take().unwrap().join();
 
-            return SceneChange::To(Box::new(MenuScene::new(
-                self.username.clone(),
-                app_data.socket.as_mut().unwrap(),
-            )));
+            return SceneChange::To(Box::new(MenuScene::new(self.username.clone(), socket)));
         }
 
         egui::SidePanel::right("participants").show(ctx, |ui| {
@@ -410,7 +404,7 @@ impl Scene for MainScene {
                         ui,
                         self.chat_log.lock().unwrap(),
                         &mut self.chat_message,
-                        app_data.socket.as_mut().unwrap(),
+                        socket,
                     );
                 }
             }
@@ -421,7 +415,7 @@ impl Scene for MainScene {
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
                     if ui.button("Disconnect").clicked() {
-                        result = self.disconnect(app_data.socket.as_mut().unwrap());
+                        result = self.disconnect(socket);
                     }
 
                     let mut control_msg = self.control_msg.lock().unwrap();
@@ -439,23 +433,19 @@ impl Scene for MainScene {
                         let request_control = Packet::RequestControl {
                             username: self.username.clone(),
                         };
-                        request_control
-                            .send(app_data.socket.as_mut().unwrap())
-                            .unwrap();
+                        request_control.send(socket).unwrap();
                     }
                 });
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            self.central_panel_ui(ui, ctx, app_data);
+            self.central_panel_ui(ui, ctx, socket);
         });
 
         result
     }
 
-    fn on_exit(&mut self, app_data: &mut AppData) {
-        let socket = app_data.socket.as_mut().unwrap();
-
+    fn on_exit(&mut self, socket: &mut TcpStream) {
         self.disconnect(socket);
 
         let signout_packet = Packet::SignOut;

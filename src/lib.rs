@@ -266,18 +266,14 @@ pub fn chat_ui(
     });
 }
 
-pub struct AppData {
-    pub socket: Option<TcpStream>,
-}
-
 pub enum SceneChange {
     None,
     To(Box<dyn Scene>),
 }
 
 pub trait Scene {
-    fn update(&mut self, ctx: &egui::Context, app_data: &mut AppData) -> SceneChange;
-    fn on_exit(&mut self, app_data: &mut AppData);
+    fn update(&mut self, ctx: &egui::Context, socket: &mut TcpStream) -> SceneChange;
+    fn on_exit(&mut self, socket: &mut TcpStream);
 }
 
 #[repr(u8)]

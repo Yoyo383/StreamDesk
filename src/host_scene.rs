@@ -4,9 +4,7 @@ use h264_reader::{
     nal::{Nal, RefNal, UnitType},
     push::NalInterest,
 };
-use remote_desktop::{
-    chat_ui, protocol::ControlPayload, users_list, AppData, Scene, SceneChange, UserType,
-};
+use remote_desktop::{chat_ui, protocol::ControlPayload, users_list, Scene, SceneChange, UserType};
 
 use eframe::egui::PointerButton;
 use remote_desktop::protocol::Packet;
@@ -315,13 +313,11 @@ pub struct HostScene {
 }
 
 impl HostScene {
-    pub fn new(session_code: String, app_data: &mut AppData, username: String) -> Self {
+    pub fn new(session_code: String, socket: &mut TcpStream, username: String) -> Self {
         let mut command = start_ffmpeg();
         let stdout = command.stdout.take().unwrap();
 
         let stop_flag = Arc::new(AtomicBool::new(false));
-
-        let socket = app_data.socket.as_mut().unwrap();
 
         let thread_send_screen =
             thread_send_screen(socket.try_clone().unwrap(), stdout, stop_flag.clone());
@@ -377,7 +373,7 @@ impl HostScene {
 }
 
 impl Scene for HostScene {
-    fn update(&mut self, ctx: &egui::Context, app_data: &mut AppData) -> SceneChange {
+    fn update(&mut self, ctx: &egui::Context, socket: &mut TcpStream) -> SceneChange {
         let mut result: SceneChange = SceneChange::None;
 
         egui::SidePanel::right("chat").show(ctx, |ui| {
@@ -385,7 +381,7 @@ impl Scene for HostScene {
                 ui,
                 self.chat_log.lock().unwrap(),
                 &mut self.chat_message,
-                app_data.socket.as_mut().unwrap(),
+                socket,
             );
         });
 
@@ -402,7 +398,7 @@ impl Scene for HostScene {
                 let deny_packet = Packet::DenyControl {
                     username: controller,
                 };
-                deny_packet.send(app_data.socket.as_mut().unwrap()).unwrap();
+                deny_packet.send(socket).unwrap();
             }
 
             {
@@ -425,7 +421,7 @@ impl Scene for HostScene {
                             let deny_packet = Packet::DenyControl {
                                 username: user.to_string(),
                             };
-                            deny_packet.send(app_data.socket.as_mut().unwrap()).unwrap();
+                            deny_packet.send(socket).unwrap();
                         }
                     });
                 }
@@ -446,23 +442,21 @@ impl Scene for HostScene {
                         let deny_packet = Packet::DenyControl {
                             username: controller.to_string(),
                         };
-                        deny_packet.send(app_data.socket.as_mut().unwrap()).unwrap();
+                        deny_packet.send(socket).unwrap();
                     }
 
                     // send to allowed user
                     let allow_packet = Packet::RequestControl {
                         username: user_handled.to_string(),
                     };
-                    allow_packet
-                        .send(app_data.socket.as_mut().unwrap())
-                        .unwrap();
+                    allow_packet.send(socket).unwrap();
 
                     // send Deny to all other users and clear
                     for user in requesting_control.iter() {
                         let deny_packet = Packet::DenyControl {
                             username: user.to_string(),
                         };
-                        deny_packet.send(app_data.socket.as_mut().unwrap()).unwrap();
+                        deny_packet.send(socket).unwrap();
                     }
 
                     // clear requesting users
@@ -486,7 +480,7 @@ impl Scene for HostScene {
                                 code: 0,
                                 username: user.to_string(),
                             };
-                            packet.send(app_data.socket.as_mut().unwrap()).unwrap();
+                            packet.send(socket).unwrap();
                         }
 
                         if ui.button("Deny").clicked() {
@@ -495,7 +489,7 @@ impl Scene for HostScene {
                             let deny_packet = Packet::DenyJoin {
                                 username: user.to_string(),
                             };
-                            deny_packet.send(app_data.socket.as_mut().unwrap()).unwrap();
+                            deny_packet.send(socket).unwrap();
                         }
                     });
                 }
@@ -506,16 +500,14 @@ impl Scene for HostScene {
             }
 
             if ui.button("End Session").clicked() {
-                result = self.disconnect(app_data.socket.as_mut().unwrap());
+                result = self.disconnect(socket);
             }
         });
 
         result
     }
 
-    fn on_exit(&mut self, app_data: &mut remote_desktop::AppData) {
-        let socket = app_data.socket.as_mut().unwrap();
-
+    fn on_exit(&mut self, socket: &mut TcpStream) {
         self.disconnect(socket);
 
         let signout_packet = Packet::SignOut;

@@ -12,7 +12,7 @@ use std::{
 };
 
 use eframe::egui::{self, pos2, Color32, ImageSource, Rect, Sense, Stroke, Ui, Vec2};
-use remote_desktop::{protocol::Packet, AppData, Scene, SceneChange};
+use remote_desktop::{protocol::Packet, Scene, SceneChange};
 
 use crate::menu_scene::MenuScene;
 
@@ -255,7 +255,7 @@ impl WatchScene {
 }
 
 impl Scene for WatchScene {
-    fn update(&mut self, ctx: &egui::Context, app_data: &mut AppData) -> SceneChange {
+    fn update(&mut self, ctx: &egui::Context, socket: &mut TcpStream) -> SceneChange {
         let mut result = SceneChange::None;
 
         let now = Instant::now();
@@ -324,8 +324,6 @@ impl Scene for WatchScene {
                     }
                     // skip forward 5 seconds
                     if response.clicked() {
-                        let socket = app_data.socket.as_mut().unwrap();
-
                         self.seek_recording(-5, socket);
                     }
 
@@ -338,8 +336,6 @@ impl Scene for WatchScene {
                     }
                     // skip forward 5 seconds
                     if response.clicked() {
-                        let socket = app_data.socket.as_mut().unwrap();
-
                         self.seek_recording(5, socket);
                     }
 
@@ -350,7 +346,7 @@ impl Scene for WatchScene {
 
                 ui.vertical_centered(|ui| {
                     if ui.button("Exit").clicked() {
-                        result = self.exit(app_data.socket.as_mut().unwrap());
+                        result = self.exit(socket);
                     }
                 });
             });
@@ -362,9 +358,7 @@ impl Scene for WatchScene {
         result
     }
 
-    fn on_exit(&mut self, app_data: &mut AppData) {
-        let socket = app_data.socket.as_mut().unwrap();
-
+    fn on_exit(&mut self, socket: &mut TcpStream) {
         self.exit(socket);
 
         let signout_packet = Packet::SignOut;
