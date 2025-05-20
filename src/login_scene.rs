@@ -1,6 +1,6 @@
 use std::{net::TcpStream, sync::mpsc::Receiver};
 
-use eframe::egui::{self, Align, Color32, FontId, Layout, RichText, TextEdit};
+use eframe::egui::{self, Align, Color32, FontId, Layout, RichText, SelectableLabel, TextEdit};
 use remote_desktop::{
     protocol::{Packet, ResultPacket},
     AppData, Scene, SceneChange,
@@ -9,12 +9,20 @@ use remote_desktop::{
 use crate::menu_scene::MenuScene;
 
 pub struct LoginScene {
-    username: String,
-    password: String,
+    login_username: String,
+    login_password: String,
+    register_username: String,
+    register_password: String,
+    register_confirm_password: String,
+
     socket_receiver: Option<Receiver<Option<TcpStream>>>,
     connected_to_server: bool,
     failed_to_connect: bool,
-    error_message: String,
+
+    error_message_login: String,
+    error_message_register: String,
+
+    is_login: bool,
 }
 
 impl LoginScene {
@@ -23,20 +31,28 @@ impl LoginScene {
         connected_to_server: bool,
     ) -> Self {
         Self {
-            username: String::new(),
-            password: String::new(),
+            login_username: String::new(),
+            login_password: String::new(),
+            register_username: String::new(),
+            register_password: String::new(),
+            register_confirm_password: String::new(),
+
             socket_receiver,
             connected_to_server,
             failed_to_connect: false,
-            error_message: String::new(),
+
+            error_message_login: String::new(),
+            error_message_register: String::new(),
+
+            is_login: true,
         }
     }
 
     fn login(&mut self, socket: &mut TcpStream) -> SceneChange {
-        let password = format!("{:x}", md5::compute(self.password.clone()));
+        let password = format!("{:x}", md5::compute(self.login_password.clone()));
 
         let login_packet = Packet::Login {
-            username: self.username.clone(),
+            username: self.login_username.clone(),
             password,
         };
         login_packet.send(socket).unwrap();
@@ -44,21 +60,28 @@ impl LoginScene {
         let result = ResultPacket::receive(socket).unwrap();
         match result {
             ResultPacket::Failure(msg) => {
-                self.error_message = msg;
+                self.error_message_login = msg;
                 SceneChange::None
             }
 
-            ResultPacket::Success(_) => {
-                SceneChange::To(Box::new(MenuScene::new(self.username.clone(), socket)))
-            }
+            ResultPacket::Success(_) => SceneChange::To(Box::new(MenuScene::new(
+                self.login_username.clone(),
+                socket,
+            ))),
         }
     }
 
     fn register(&mut self, socket: &mut TcpStream) -> SceneChange {
-        let password = format!("{:x}", md5::compute(self.password.clone()));
+        // make sure passwords match
+        if self.register_password != self.register_confirm_password {
+            self.error_message_register = "Passwords do not match,".to_string();
+            return SceneChange::None;
+        }
+
+        let password = format!("{:x}", md5::compute(self.login_password.clone()));
 
         let register_packet = Packet::Register {
-            username: self.username.clone(),
+            username: self.login_username.clone(),
             password,
         };
         register_packet.send(socket).unwrap();
@@ -66,13 +89,14 @@ impl LoginScene {
         let result = ResultPacket::receive(socket).unwrap();
         match result {
             ResultPacket::Failure(msg) => {
-                self.error_message = msg;
+                self.error_message_register = msg;
                 SceneChange::None
             }
 
-            ResultPacket::Success(_) => {
-                SceneChange::To(Box::new(MenuScene::new(self.username.clone(), socket)))
-            }
+            ResultPacket::Success(_) => SceneChange::To(Box::new(MenuScene::new(
+                self.login_username.clone(),
+                socket,
+            ))),
         }
     }
 }
@@ -128,33 +152,104 @@ impl Scene for LoginScene {
             if !self.connected_to_server {
                 ui.disable();
             }
-            ui.add(
-                TextEdit::singleline(&mut self.username)
-                    .hint_text("Username")
-                    .font(FontId::proportional(30.0)),
-            );
 
-            ui.add(
-                TextEdit::singleline(&mut self.password)
-                    .hint_text("Password")
-                    .font(FontId::proportional(30.0))
-                    .password(true),
-            );
+            ui.horizontal(|ui| {
+                let login_text = RichText::new("Login").size(20.0);
+                let register_text = RichText::new("Register").size(20.0);
 
-            if ui.button("Login").clicked() {
-                result = self.login(app_data.socket.as_mut().unwrap());
-            }
+                let login_label = SelectableLabel::new(self.is_login, login_text);
+                if ui.add(login_label).clicked() {
+                    self.is_login = true;
+                }
 
-            if ui.button("Register").clicked() {
-                result = self.register(app_data.socket.as_mut().unwrap());
-            }
+                let register_label = SelectableLabel::new(!self.is_login, register_text);
+                if ui.add(register_label).clicked() {
+                    self.is_login = false;
+                }
+            });
 
             ui.add_space(10.0);
-            ui.label(
-                RichText::new(&self.error_message)
-                    .size(20.0)
-                    .color(Color32::RED),
-            );
+
+            ui.vertical_centered(|ui| {
+                if self.is_login {
+                    ui.add(
+                        TextEdit::singleline(&mut self.login_username)
+                            .hint_text("Username")
+                            .font(FontId::proportional(30.0)),
+                    );
+
+                    ui.add_space(5.0);
+
+                    ui.add(
+                        TextEdit::singleline(&mut self.login_password)
+                            .hint_text("Password")
+                            .font(FontId::proportional(30.0))
+                            .password(true),
+                    );
+
+                    ui.add_space(5.0);
+
+                    if ui
+                        .add_sized(
+                            [100.0, 40.0],
+                            egui::Button::new(RichText::new("Login").size(20.0)),
+                        )
+                        .clicked()
+                    {
+                        result = self.login(app_data.socket.as_mut().unwrap());
+                    }
+
+                    ui.add_space(10.0);
+                    ui.label(
+                        RichText::new(&self.error_message_login)
+                            .size(20.0)
+                            .color(Color32::RED),
+                    );
+                } else {
+                    ui.add(
+                        TextEdit::singleline(&mut self.register_username)
+                            .hint_text("Username")
+                            .font(FontId::proportional(30.0)),
+                    );
+
+                    ui.add_space(5.0);
+
+                    ui.add(
+                        TextEdit::singleline(&mut self.register_password)
+                            .hint_text("Password")
+                            .font(FontId::proportional(30.0))
+                            .password(true),
+                    );
+
+                    ui.add_space(5.0);
+
+                    ui.add(
+                        TextEdit::singleline(&mut self.register_confirm_password)
+                            .hint_text("Confirm assword")
+                            .font(FontId::proportional(30.0))
+                            .password(true),
+                    );
+
+                    ui.add_space(5.0);
+
+                    if ui
+                        .add_sized(
+                            [100.0, 40.0],
+                            egui::Button::new(RichText::new("Register").size(20.0)),
+                        )
+                        .clicked()
+                    {
+                        result = self.register(app_data.socket.as_mut().unwrap());
+                    }
+
+                    ui.add_space(10.0);
+                    ui.label(
+                        RichText::new(&self.error_message_register)
+                            .size(20.0)
+                            .color(Color32::RED),
+                    );
+                }
+            });
         });
 
         result
