@@ -139,10 +139,7 @@ impl Scene for MenuScene {
                         )))
                     }
 
-                    false => {
-                        self.join_fail_message = msg;
-                        self.recordings = receive_recordings(app_data.socket.as_mut().unwrap());
-                    }
+                    false => self.join_fail_message = msg,
                 }
             }
         }
@@ -247,11 +244,7 @@ impl Scene for MenuScene {
                     match self.session_code.parse::<u32>() {
                         Ok(session_code) => match self.join_button(session_code, app_data) {
                             Ok(msg) => self.join_fail_message = msg,
-                            Err(msg) => {
-                                self.join_fail_message = msg;
-                                self.recordings =
-                                    receive_recordings(app_data.socket.as_mut().unwrap());
-                            }
+                            Err(msg) => self.join_fail_message = msg,
                         },
                         Err(_) => {
                             self.join_fail_message =
