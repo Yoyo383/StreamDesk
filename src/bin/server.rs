@@ -768,6 +768,8 @@ fn handle_client(
 }
 
 fn main() {
+    let _ = std::fs::create_dir(RECORDINGS_FOLDER);
+
     let conn = rusqlite::Connection::open(DATABASE_FILE).unwrap();
     conn.execute(
         "CREATE TABLE IF NOT EXISTS users(

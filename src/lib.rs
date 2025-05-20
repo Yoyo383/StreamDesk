@@ -1,6 +1,11 @@
+use core::f32;
 use std::{collections::HashMap, net::TcpStream, sync::MutexGuard};
 
-use eframe::egui::{self, Color32, Key, Pos2, Rect, RichText, ScrollArea, TextStyle, Ui};
+use eframe::egui::{
+    self,
+    text::{LayoutJob, TextWrapping},
+    Color32, FontId, Key, Pos2, Rect, RichText, ScrollArea, TextFormat, Ui,
+};
 use protocol::Packet;
 
 pub mod protocol;
@@ -187,32 +192,28 @@ pub fn chat_ui(
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
         ui.add_space(10.0);
         ui.horizontal(|ui| {
-            ui.text_edit_singleline(message);
-            if ui.button("Send").clicked() && !message.is_empty() {
-                // send Chat packet
-                let chat_packet = Packet::Chat {
-                    message: message.to_string(),
-                };
-                chat_packet.send(socket).unwrap();
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                if ui.button("Send").clicked() && !message.is_empty() {
+                    // send Chat packet
+                    let chat_packet = Packet::Chat {
+                        message: message.to_string(),
+                    };
+                    chat_packet.send(socket).unwrap();
 
-                message.clear();
-            }
+                    message.clear();
+                }
+
+                ui.add(egui::TextEdit::singleline(message).desired_width(f32::INFINITY));
+            });
         });
 
         ui.add_space(10.0);
 
-        let text_style = TextStyle::Body;
-        let row_height = ui.text_style_height(&text_style);
-        ScrollArea::vertical().stick_to_bottom(true).show_rows(
-            ui,
-            row_height,
-            chat_log.len(),
-            |ui, row_range| {
-                let width = ui.fonts(|f| f.glyph_width(&TextStyle::Body.resolve(ui.style()), ' '));
-                ui.spacing_mut().item_spacing.x = width;
-
-                for row in row_range {
-                    let message = &mut chat_log[chat_log.len() - row - 1].clone();
+        ScrollArea::vertical()
+            .stick_to_bottom(true)
+            .show(ui, |ui: &mut Ui| {
+                for message in chat_log.iter().rev() {
+                    let mut message = message.clone();
                     let mut text_color = Color32::WHITE;
 
                     if message.chars().nth(0).unwrap() == '#' {
@@ -230,16 +231,38 @@ pub fn chat_ui(
                     }
 
                     if let Some((username, message)) = message.split_once(": ") {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(format!("{}:", username)).strong());
-                            ui.label(message);
-                        });
+                        let mut job = LayoutJob::default();
+
+                        // Style for the username (white color)
+                        let username_format = TextFormat {
+                            font_id: FontId::proportional(14.0),
+                            color: text_color,
+                            ..Default::default()
+                        };
+                        job.append(&format!("{}: ", username), 0.0, username_format);
+
+                        // Style for the message
+                        let message_format = TextFormat {
+                            font_id: FontId::proportional(14.0),
+                            ..Default::default()
+                        };
+                        job.append(message, 0.0, message_format);
+
+                        // Enable wrapping
+                        job.wrap = TextWrapping {
+                            max_width: ui.available_width(),
+                            ..Default::default()
+                        };
+
+                        ui.label(job);
                     } else {
-                        ui.colored_label(text_color, message);
+                        ui.add(
+                            egui::Label::new(RichText::new(message.clone()).color(text_color))
+                                .wrap(),
+                        );
                     }
                 }
-            },
-        );
+            });
     });
 }
 

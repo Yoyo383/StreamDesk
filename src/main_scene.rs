@@ -138,7 +138,7 @@ fn thread_read_decoded(
             if let Ok(()) = stdout.read_exact(&mut rgba_buffer) {
                 let mut queue = frame_queue.lock().unwrap();
 
-                if queue.len() > 1 {
+                if queue.len() > 3 {
                     queue.pop_front();
                 }
                 queue.push_back(rgba_buffer.clone());
