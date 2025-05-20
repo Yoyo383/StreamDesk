@@ -120,7 +120,8 @@ impl MenuScene {
 }
 
 impl Scene for MenuScene {
-    fn update(&mut self, ctx: &egui::Context, socket: &mut TcpStream) -> SceneChange {
+    fn update(&mut self, ctx: &egui::Context, socket: &mut Option<TcpStream>) -> SceneChange {
+        let socket = socket.as_mut().unwrap();
         let mut result: SceneChange = SceneChange::None;
 
         if let Some(join_receiver) = &self.join_receiver {
@@ -271,7 +272,9 @@ impl Scene for MenuScene {
         result
     }
 
-    fn on_exit(&mut self, socket: &mut TcpStream) {
+    fn on_exit(&mut self, socket: &mut Option<TcpStream>) {
+        let socket = socket.as_mut().unwrap();
+
         let signout_packet = Packet::SignOut;
         signout_packet.send(socket).unwrap();
 

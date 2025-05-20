@@ -255,7 +255,8 @@ impl WatchScene {
 }
 
 impl Scene for WatchScene {
-    fn update(&mut self, ctx: &egui::Context, socket: &mut TcpStream) -> SceneChange {
+    fn update(&mut self, ctx: &egui::Context, socket: &mut Option<TcpStream>) -> SceneChange {
+        let socket = socket.as_mut().unwrap();
         let mut result = SceneChange::None;
 
         let now = Instant::now();
@@ -358,7 +359,9 @@ impl Scene for WatchScene {
         result
     }
 
-    fn on_exit(&mut self, socket: &mut TcpStream) {
+    fn on_exit(&mut self, socket: &mut Option<TcpStream>) {
+        let socket = socket.as_mut().unwrap();
+
         self.exit(socket);
 
         let signout_packet = Packet::SignOut;

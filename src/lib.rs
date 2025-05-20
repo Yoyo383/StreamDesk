@@ -272,8 +272,8 @@ pub enum SceneChange {
 }
 
 pub trait Scene {
-    fn update(&mut self, ctx: &egui::Context, socket: &mut TcpStream) -> SceneChange;
-    fn on_exit(&mut self, socket: &mut TcpStream);
+    fn update(&mut self, ctx: &egui::Context, socket: &mut Option<TcpStream>) -> SceneChange;
+    fn on_exit(&mut self, socket: &mut Option<TcpStream>);
 }
 
 #[repr(u8)]

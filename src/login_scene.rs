@@ -124,13 +124,13 @@ impl LoginScene {
 }
 
 impl Scene for LoginScene {
-    fn update(&mut self, ctx: &egui::Context, socket: &mut TcpStream) -> SceneChange {
+    fn update(&mut self, ctx: &egui::Context, socket: &mut Option<TcpStream>) -> SceneChange {
         let mut result: SceneChange = SceneChange::None;
 
         if !self.connected_to_server {
             match self.socket_receiver.as_ref().unwrap().try_recv() {
                 Ok(Some(new_socket)) => {
-                    *socket = new_socket;
+                    *socket = Some(new_socket);
                     self.connected_to_server = true;
                 }
                 Ok(None) => self.failed_to_connect = true,
@@ -218,7 +218,7 @@ impl Scene for LoginScene {
                         )
                         .clicked()
                     {
-                        result = self.login(socket);
+                        result = self.login(socket.as_mut().unwrap());
                     }
 
                     ui.add_space(10.0);
@@ -261,7 +261,7 @@ impl Scene for LoginScene {
                         )
                         .clicked()
                     {
-                        result = self.register(socket);
+                        result = self.register(socket.as_mut().unwrap());
                     }
 
                     ui.add_space(10.0);
@@ -277,7 +277,9 @@ impl Scene for LoginScene {
         result
     }
 
-    fn on_exit(&mut self, socket: &mut TcpStream) {
+    fn on_exit(&mut self, socket: &mut Option<TcpStream>) {
+        let socket = socket.as_mut().unwrap();
+
         let shutdown_packet = Packet::Shutdown;
         shutdown_packet.send(socket).unwrap();
 

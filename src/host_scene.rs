@@ -373,7 +373,8 @@ impl HostScene {
 }
 
 impl Scene for HostScene {
-    fn update(&mut self, ctx: &egui::Context, socket: &mut TcpStream) -> SceneChange {
+    fn update(&mut self, ctx: &egui::Context, socket: &mut Option<TcpStream>) -> SceneChange {
+        let socket = socket.as_mut().unwrap();
         let mut result: SceneChange = SceneChange::None;
 
         egui::SidePanel::right("chat").show(ctx, |ui| {
@@ -507,7 +508,9 @@ impl Scene for HostScene {
         result
     }
 
-    fn on_exit(&mut self, socket: &mut TcpStream) {
+    fn on_exit(&mut self, socket: &mut Option<TcpStream>) {
+        let socket = socket.as_mut().unwrap();
+
         self.disconnect(socket);
 
         let signout_packet = Packet::SignOut;

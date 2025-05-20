@@ -353,7 +353,8 @@ impl MainScene {
 }
 
 impl Scene for MainScene {
-    fn update(&mut self, ctx: &egui::Context, socket: &mut TcpStream) -> SceneChange {
+    fn update(&mut self, ctx: &egui::Context, socket: &mut Option<TcpStream>) -> SceneChange {
+        let socket = socket.as_mut().unwrap();
         let mut result: SceneChange = SceneChange::None;
 
         let now = Instant::now();
@@ -445,7 +446,9 @@ impl Scene for MainScene {
         result
     }
 
-    fn on_exit(&mut self, socket: &mut TcpStream) {
+    fn on_exit(&mut self, socket: &mut Option<TcpStream>) {
+        let socket = socket.as_mut().unwrap();
+
         self.disconnect(socket);
 
         let signout_packet = Packet::SignOut;

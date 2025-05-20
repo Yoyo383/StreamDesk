@@ -42,10 +42,7 @@ impl MyApp {
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let scene_change = self
-            .scene
-            .as_mut()
-            .update(ctx, &mut self.socket.as_mut().unwrap());
+        let scene_change = self.scene.as_mut().update(ctx, &mut self.socket);
         match scene_change {
             SceneChange::To(scene) => self.scene = scene,
             _ => (),
@@ -55,9 +52,7 @@ impl eframe::App for MyApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.scene
-            .as_mut()
-            .on_exit(&mut self.socket.as_mut().unwrap());
+        self.scene.as_mut().on_exit(&mut self.socket);
     }
 }
 
