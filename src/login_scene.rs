@@ -74,14 +74,36 @@ impl LoginScene {
     fn register(&mut self, socket: &mut TcpStream) -> SceneChange {
         // make sure passwords match
         if self.register_password != self.register_confirm_password {
-            self.error_message_register = "Passwords do not match,".to_string();
+            self.error_message_register = "Passwords do not match.".to_string();
             return SceneChange::None;
         }
 
-        let password = format!("{:x}", md5::compute(self.login_password.clone()));
+        // validate credentials
+        if self.register_username.is_empty() {
+            self.error_message_register = "Username cannot be empty.".to_string();
+            return SceneChange::None;
+        }
+
+        if self
+            .register_username
+            .chars()
+            .any(|c| !c.is_ascii_alphanumeric())
+        {
+            self.error_message_register =
+                "Username can only contain English letters and numbers.".to_string();
+            return SceneChange::None;
+        }
+
+        if self.register_password.is_empty() {
+            self.error_message_register = "Password cannot be empty.".to_string();
+            return SceneChange::None;
+        }
+
+        // send to server
+        let password = format!("{:x}", md5::compute(self.register_password.clone()));
 
         let register_packet = Packet::Register {
-            username: self.login_username.clone(),
+            username: self.register_username.clone(),
             password,
         };
         register_packet.send(socket).unwrap();
@@ -94,7 +116,7 @@ impl LoginScene {
             }
 
             ResultPacket::Success(_) => SceneChange::To(Box::new(MenuScene::new(
-                self.login_username.clone(),
+                self.register_username.clone(),
                 socket,
             ))),
         }

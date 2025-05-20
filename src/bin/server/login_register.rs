@@ -53,6 +53,25 @@ pub fn login_or_register(
         }
 
         Packet::Register { username, password } => {
+            // validate credentials
+            if username.is_empty() {
+                ResultPacket::Failure("Username cannot be empty.".to_string())
+                    .send(socket)
+                    .unwrap();
+
+                return None;
+            }
+
+            if username.chars().any(|c| !c.is_ascii_alphanumeric()) {
+                ResultPacket::Failure(
+                    "Username can only contain English letters and numbers.".to_string(),
+                )
+                .send(socket)
+                .unwrap();
+
+                return None;
+            }
+
             let inserted = conn.execute(
                 "INSERT INTO users (username, password) VALUES (?1, ?2)",
                 params![username, password],
