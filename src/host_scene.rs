@@ -384,26 +384,14 @@ impl Scene for HostScene {
             );
         });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading(format!("Hosting, code {}", self.session_code));
-            ui.separator();
+        egui::SidePanel::left("requests").show(ctx, |ui| {
+            let mut requesting_control = self.requesting_control.lock().unwrap();
+            let mut user_handled = String::new();
+            let mut was_allowed = false;
 
-            if let Some(controller) = users_list(
-                ui,
-                self.usernames.lock().unwrap(),
-                self.username.clone(),
-                true,
-            ) {
-                let deny_packet = Packet::DenyControl {
-                    username: controller,
-                };
-                channel.send(deny_packet).unwrap();
-            }
-
-            {
-                let mut requesting_control = self.requesting_control.lock().unwrap();
-                let mut user_handled = String::new();
-                let mut was_allowed = false;
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.heading("Control Requests");
+                ui.separator();
 
                 for user in requesting_control.iter() {
                     ui.horizontal(|ui| {
@@ -461,12 +449,14 @@ impl Scene for HostScene {
                     // clear requesting users
                     requesting_control.clear();
                 }
-            }
 
-            // requesting join
-            {
+                // requesting join
                 let mut requesting_join = self.requesting_join.lock().unwrap();
                 let mut user_handled = String::new();
+
+                ui.add_space(20.0);
+                ui.heading("Join Requests");
+                ui.separator();
 
                 for user in requesting_join.iter() {
                     ui.horizontal(|ui| {
@@ -496,6 +486,23 @@ impl Scene for HostScene {
                 if !user_handled.is_empty() {
                     requesting_join.remove(&user_handled);
                 }
+            });
+        });
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.heading(format!("Hosting, code {}", self.session_code));
+            ui.separator();
+
+            if let Some(controller) = users_list(
+                ui,
+                self.usernames.lock().unwrap(),
+                self.username.clone(),
+                true,
+            ) {
+                let deny_packet = Packet::DenyControl {
+                    username: controller,
+                };
+                channel.send(deny_packet).unwrap();
             }
 
             if ui.button("End Session").clicked() {
