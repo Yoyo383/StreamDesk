@@ -99,10 +99,13 @@ fn thread_receive_socket(
 
             Packet::DenyControl { .. } => {
                 let mut control_msg = control_msg.lock().unwrap();
-                *control_msg = REQUEST_CONTROL_MSG.to_string();
 
-                let mut chat_log = chat_log.lock().unwrap();
-                chat_log.push("#rYour control request was denied by the host.".to_string());
+                if *control_msg != CONTROLLING_MSG {
+                    let mut chat_log = chat_log.lock().unwrap();
+                    chat_log.push("#rYour control request was denied by the host.".to_string());
+                }
+
+                *control_msg = REQUEST_CONTROL_MSG.to_string();
             }
 
             Packet::SessionExit => {

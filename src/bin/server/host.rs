@@ -83,7 +83,7 @@ pub fn handle_host(
                             joined_before: true,
                             username: username.clone(),
                         };
-                        channel.send(username_packet).unwrap();
+                        connection.channel.send(username_packet).unwrap();
                     }
 
                     session.connections.insert(username.clone(), connection);
