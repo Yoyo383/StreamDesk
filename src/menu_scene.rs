@@ -29,7 +29,7 @@ fn numeric_text_edit(ui: &mut Ui, value: &mut String) {
     }
 }
 
-fn receive_recordings(channel: &mut SecureChannel) -> HashMap<i32, String> {
+fn receive_recordings(channel: &mut SecureChannel) -> Vec<(i32, String)> {
     let mut recordings = HashMap::new();
 
     loop {
@@ -46,6 +46,11 @@ fn receive_recordings(channel: &mut SecureChannel) -> HashMap<i32, String> {
         }
     }
 
+    let mut recordings: Vec<(i32, String)> = recordings.into_iter().collect();
+
+    // sort by the time (in reverse, newest one first)
+    recordings.sort_by(|a, b| b.1.cmp(&a.1));
+
     recordings
 }
 
@@ -55,7 +60,7 @@ pub struct MenuScene {
     is_error: bool,
 
     username: String,
-    recordings: HashMap<i32, String>,
+    recordings: Vec<(i32, String)>,
     join_receiver: Option<Receiver<(bool, String)>>,
     is_disabled: bool,
 }
@@ -192,37 +197,35 @@ impl Scene for MenuScene {
             ui.heading("Watch past recordings");
             ui.separator();
 
-            let mut recordings: Vec<(&i32, &String)> = self.recordings.iter().collect();
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                for (id, recording) in &self.recordings {
+                    let time: DateTime<Local> = recording.parse().unwrap();
+                    let recording_display_name = time.format("%B %-d, %Y | %T").to_string();
 
-            // sort by the time (in reverse, newest one first)
-            recordings.sort_by(|a, b| b.1.cmp(a.1));
+                    if ui.button(recording_display_name).clicked() {
+                        channel.send(Packet::WatchRecording { id: *id }).unwrap();
 
-            for (id, recording) in recordings {
-                let time: DateTime<Local> = recording.parse().unwrap();
-                let recording_display_name = time.format("%B %-d, %Y | %T").to_string();
+                        let result_packet = channel.receive().unwrap();
 
-                if ui.button(recording_display_name).clicked() {
-                    channel.send(Packet::WatchRecording { id: *id }).unwrap();
+                        match result_packet {
+                            ResultPacket::Failure(msg) => {
+                                self.is_error = true;
+                                self.status_message = msg;
+                            }
 
-                    let result_packet = channel.receive().unwrap();
-
-                    match result_packet {
-                        ResultPacket::Failure(msg) => {
-                            self.is_error = true;
-                            self.status_message = msg;
-                        }
-
-                        ResultPacket::Success(duration) => {
-                            let duration: i32 = duration.parse().expect("duration should be i32");
-                            result = SceneChange::To(Box::new(WatchScene::new(
-                                self.username.clone(),
-                                duration,
-                                channel,
-                            )));
+                            ResultPacket::Success(duration) => {
+                                let duration: i32 =
+                                    duration.parse().expect("duration should be i32");
+                                result = SceneChange::To(Box::new(WatchScene::new(
+                                    self.username.clone(),
+                                    duration,
+                                    channel,
+                                )));
+                            }
                         }
                     }
                 }
-            }
+            });
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
