@@ -51,7 +51,9 @@ fn receive_recordings(channel: &mut SecureChannel) -> HashMap<i32, String> {
 
 pub struct MenuScene {
     session_code: String,
-    join_fail_message: String,
+    status_message: String,
+    is_error: bool,
+
     username: String,
     recordings: HashMap<i32, String>,
     join_receiver: Option<Receiver<(bool, String)>>,
@@ -59,12 +61,14 @@ pub struct MenuScene {
 }
 
 impl MenuScene {
-    pub fn new(username: String, channel: &mut SecureChannel) -> Self {
+    pub fn new(username: String, channel: &mut SecureChannel, status_message: &str) -> Self {
         let recordings = receive_recordings(channel);
 
         Self {
             session_code: String::new(),
-            join_fail_message: String::new(),
+            status_message: status_message.to_string(),
+            is_error: false,
+
             username,
             recordings,
             join_receiver: None,
@@ -139,7 +143,10 @@ impl Scene for MenuScene {
                         )))
                     }
 
-                    false => self.join_fail_message = msg,
+                    false => {
+                        self.is_error = true;
+                        self.status_message = msg
+                    }
                 }
             }
         }
@@ -201,7 +208,8 @@ impl Scene for MenuScene {
 
                     match result_packet {
                         ResultPacket::Failure(msg) => {
-                            self.join_fail_message = msg;
+                            self.is_error = true;
+                            self.status_message = msg;
                         }
 
                         ResultPacket::Success(duration) => {
@@ -238,11 +246,18 @@ impl Scene for MenuScene {
                 if join_button.clicked() {
                     match self.session_code.parse::<u32>() {
                         Ok(session_code) => match self.join_button(session_code, channel) {
-                            Ok(msg) => self.join_fail_message = msg,
-                            Err(msg) => self.join_fail_message = msg,
+                            Ok(msg) => {
+                                self.is_error = false;
+                                self.status_message = msg
+                            }
+                            Err(msg) => {
+                                self.is_error = true;
+                                self.status_message = msg
+                            }
                         },
                         Err(_) => {
-                            self.join_fail_message =
+                            self.is_error = true;
+                            self.status_message =
                                 "Invalid session code. Please enter a 6 digit code.".to_string()
                         }
                     }
@@ -250,9 +265,13 @@ impl Scene for MenuScene {
 
                 ui.add_space(10.0);
                 ui.label(
-                    RichText::new(&self.join_fail_message)
+                    RichText::new(&self.status_message)
                         .size(20.0)
-                        .color(Color32::RED),
+                        .color(if self.is_error {
+                            Color32::RED
+                        } else {
+                            Color32::BLUE
+                        }),
                 );
             });
 

@@ -366,7 +366,7 @@ impl HostScene {
 
         let _ = self.thread_read_socket.take().unwrap().join();
 
-        SceneChange::To(Box::new(MenuScene::new(self.username.clone(), channel)))
+        SceneChange::To(Box::new(MenuScene::new(self.username.clone(), channel, "")))
     }
 }
 

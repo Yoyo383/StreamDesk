@@ -68,6 +68,7 @@ impl LoginScene {
             ResultPacket::Success(_) => SceneChange::To(Box::new(MenuScene::new(
                 self.login_username.clone(),
                 channel,
+                "",
             ))),
         }
     }
@@ -119,6 +120,7 @@ impl LoginScene {
             ResultPacket::Success(_) => SceneChange::To(Box::new(MenuScene::new(
                 self.register_username.clone(),
                 channel,
+                "",
             ))),
         }
     }

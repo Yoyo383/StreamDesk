@@ -351,7 +351,7 @@ impl MainScene {
         let _ = self.thread_read_decoded.take().unwrap().join();
         let _ = self.ffmpeg_command.kill();
 
-        SceneChange::To(Box::new(MenuScene::new(self.username.clone(), channel)))
+        SceneChange::To(Box::new(MenuScene::new(self.username.clone(), channel, "")))
     }
 }
 
@@ -377,7 +377,11 @@ impl Scene for MainScene {
             let _ = self.thread_receive_socket.take().unwrap().join();
             let _ = self.thread_read_decoded.take().unwrap().join();
 
-            return SceneChange::To(Box::new(MenuScene::new(self.username.clone(), channel)));
+            return SceneChange::To(Box::new(MenuScene::new(
+                self.username.clone(),
+                channel,
+                "The host ended the session.",
+            )));
         }
 
         egui::SidePanel::right("participants").show(ctx, |ui| {
