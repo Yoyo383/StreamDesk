@@ -1,5 +1,5 @@
 use core::f32;
-use std::{collections::HashMap, net::TcpStream, sync::MutexGuard};
+use std::{collections::HashMap, sync::MutexGuard};
 
 use eframe::egui::{
     self,
@@ -7,8 +7,10 @@ use eframe::egui::{
     Color32, FontId, Key, Pos2, Rect, RichText, ScrollArea, TextFormat, Ui,
 };
 use protocol::Packet;
+use secure_channel::SecureChannel;
 
 pub mod protocol;
+pub mod secure_channel;
 
 pub fn egui_key_to_vk(key: &Key) -> Option<u16> {
     use winapi::um::winuser::*;
@@ -184,7 +186,7 @@ pub fn chat_ui(
     ui: &mut Ui,
     chat_log: MutexGuard<Vec<String>>,
     message: &mut String,
-    socket: &mut TcpStream,
+    channel: &mut SecureChannel,
 ) {
     ui.heading("Chat");
     ui.separator();
@@ -198,7 +200,7 @@ pub fn chat_ui(
                     let chat_packet = Packet::Chat {
                         message: message.to_string(),
                     };
-                    chat_packet.send(socket).unwrap();
+                    channel.send(chat_packet).unwrap();
 
                     message.clear();
                 }
@@ -272,8 +274,8 @@ pub enum SceneChange {
 }
 
 pub trait Scene {
-    fn update(&mut self, ctx: &egui::Context, socket: &mut Option<TcpStream>) -> SceneChange;
-    fn on_exit(&mut self, socket: &mut Option<TcpStream>);
+    fn update(&mut self, ctx: &egui::Context, channel: &mut Option<SecureChannel>) -> SceneChange;
+    fn on_exit(&mut self, channel: &mut Option<SecureChannel>);
 }
 
 #[repr(u8)]

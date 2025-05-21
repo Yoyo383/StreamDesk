@@ -1,12 +1,16 @@
-use std::{
-    collections::VecDeque,
-    io::{Read, Write},
-    net::TcpStream,
-};
+use std::collections::VecDeque;
 
 use eframe::egui::PointerButton;
 
 use crate::UserType;
+
+pub trait ProtocolMessage {
+    fn to_bytes(&self) -> Vec<u8>;
+
+    fn from_bytes(bytes: Vec<u8>) -> Option<Self>
+    where
+        Self: Sized;
+}
 
 pub fn get_u32_from_packet(bytes: &mut VecDeque<u8>) -> Option<u32> {
     let data: Vec<u8> = bytes.drain(0..4).collect();
@@ -24,15 +28,10 @@ pub fn get_u16_from_packet(bytes: &mut VecDeque<u8>) -> Option<u16> {
 }
 
 /// Reads a `u32` integer from the socket (in big endian) and then reads that number of bytes.
-fn read_length_and_data(socket: &mut TcpStream) -> std::io::Result<Vec<u8>> {
-    let mut len_buf = [0u8; 4];
-    socket.read_exact(&mut len_buf)?;
-    let len = u32::from_be_bytes(len_buf);
+fn read_length_and_data(bytes: &mut VecDeque<u8>) -> Option<Vec<u8>> {
+    let len = get_u32_from_packet(bytes)? as usize;
 
-    let mut data = vec![0u8; len as usize];
-    socket.read_exact(&mut data)?;
-
-    Ok(data)
+    Some(bytes.drain(..len).collect())
 }
 
 fn write_length_and_string(bytes: &mut Vec<u8>, string: &str) {
@@ -45,7 +44,7 @@ pub enum ResultPacket {
     Success(String),
 }
 
-impl ResultPacket {
+impl ProtocolMessage for ResultPacket {
     /// Turns a `ResultPacket` into bytes that can be sent over a socket.
     fn to_bytes(&self) -> Vec<u8> {
         match self {
@@ -65,33 +64,22 @@ impl ResultPacket {
         }
     }
 
-    /// Sends the `Packet` through the socket.
-    pub fn send(&self, socket: &mut TcpStream) -> std::io::Result<()> {
-        let bytes = self.to_bytes();
-        socket.write_all(&bytes)
-    }
+    fn from_bytes(bytes: Vec<u8>) -> Option<Self> {
+        let mut bytes = VecDeque::from(bytes);
 
-    /// Reads a `Packet` from the socket.
-    pub fn receive(socket: &mut TcpStream) -> std::io::Result<Self> {
-        let mut packet_type_buf = [0u8; 1];
-        socket.read_exact(&mut packet_type_buf)?;
-        let packet_type = packet_type_buf[0];
-
-        let msg =
-            String::from_utf8(read_length_and_data(socket)?).expect("bytes should be valid utf8.");
+        let packet_type = bytes.pop_front()?;
+        let msg = String::from_utf8(read_length_and_data(&mut bytes)?)
+            .expect("bytes should be valid utf8.");
 
         match packet_type {
-            0 => Ok(Self::Failure(msg)),
-            1 => Ok(Self::Success(msg)),
-            _ => Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "result type is invalid",
-            )),
+            0 => Some(Self::Failure(msg)),
+            1 => Some(Self::Success(msg)),
+            _ => None,
         }
     }
 }
 
-#[derive(PartialEq, Default)]
+#[derive(PartialEq, Default, Clone)]
 pub enum Packet {
     #[default]
     None,
@@ -169,7 +157,7 @@ pub enum Packet {
     },
 }
 
-impl Packet {
+impl ProtocolMessage for Packet {
     /// Turns a `Packet` into bytes that can be sent over a socket.
     fn to_bytes(&self) -> Vec<u8> {
         let mut result: Vec<u8> = vec![];
@@ -300,76 +288,57 @@ impl Packet {
         result
     }
 
-    /// Sends the `Packet` through the socket.
-    pub fn send(&self, socket: &mut TcpStream) -> std::io::Result<()> {
-        let bytes = self.to_bytes();
-        socket.write_all(&bytes)
-    }
-
-    /// Reads a `Packet` from the socket.
-    pub fn receive(socket: &mut TcpStream) -> std::io::Result<Self> {
-        let mut packet_type_buf = [0u8; 1];
-        socket.read_exact(&mut packet_type_buf)?;
-        let packet_type = packet_type_buf[0];
+    fn from_bytes(bytes: Vec<u8>) -> Option<Self> {
+        let mut bytes = VecDeque::from(bytes);
+        let packet_type = bytes.pop_front()?;
 
         match packet_type {
-            0 => Ok(Self::None),
+            0 => Some(Self::None),
 
             // Login/Register
             1 | 2 => {
-                let username = String::from_utf8(read_length_and_data(socket)?)
+                let username = String::from_utf8(read_length_and_data(&mut bytes)?)
                     .expect("bytes should be valid utf8.");
-                let password = String::from_utf8(read_length_and_data(socket)?)
+                let password = String::from_utf8(read_length_and_data(&mut bytes)?)
                     .expect("bytes should be valid utf8.");
 
                 if packet_type == 1 {
-                    Ok(Self::Login { username, password })
+                    Some(Self::Login { username, password })
                 } else {
-                    Ok(Self::Register { username, password })
+                    Some(Self::Register { username, password })
                 }
             }
 
             // Host
-            3 => Ok(Self::Host),
+            3 => Some(Self::Host),
 
             // Join
             4 => {
-                let mut code_buf = [0u8; 4];
-                socket.read_exact(&mut code_buf)?;
-                let code = u32::from_be_bytes(code_buf);
+                let code = get_u32_from_packet(&mut bytes)?;
 
-                let username = String::from_utf8(read_length_and_data(socket)?)
+                let username = String::from_utf8(read_length_and_data(&mut bytes)?)
                     .expect("bytes should be valid utf8");
 
-                Ok(Self::Join { code, username })
+                Some(Self::Join { code, username })
             }
 
             // UserUpdate
             5 => {
-                let mut user_type_buf = [0u8; 1];
-                socket.read_exact(&mut user_type_buf)?;
-                let user_type_raw = user_type_buf[0];
+                let user_type_raw = bytes.pop_front()?;
                 let user_type = match user_type_raw {
                     0 => UserType::Leaving,
                     1 => UserType::Host,
                     2 => UserType::Controller,
                     3 => UserType::Participant,
-                    _ => {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            "user type is incorrect",
-                        ))
-                    }
+                    _ => return None,
                 };
 
-                let mut joined_before_buf = [0u8; 1];
-                socket.read_exact(&mut joined_before_buf)?;
-                let joined_before = u8::from_be_bytes(joined_before_buf) != 0;
+                let joined_before = bytes.pop_front()? != 0;
 
-                let username = String::from_utf8(read_length_and_data(socket)?)
+                let username = String::from_utf8(read_length_and_data(&mut bytes)?)
                     .expect("bytes should be valid utf8.");
 
-                Ok(Self::UserUpdate {
+                Some(Self::UserUpdate {
                     user_type,
                     joined_before,
                     username,
@@ -378,109 +347,100 @@ impl Packet {
 
             // Control
             6 => {
-                let mut payload_type_buf = [0u8; 1];
-                socket.read_exact(&mut payload_type_buf)?;
-                let payload_type = payload_type_buf[0];
+                let payload_type = bytes.pop_front()?;
 
                 let payload_length = ControlPayload::get_length(payload_type);
-                let mut payload_buf = vec![0u8; payload_length];
-                socket.read_exact(&mut payload_buf)?;
-                payload_buf.insert(0, payload_type);
+                let mut payload_raw: Vec<u8> = bytes.drain(..payload_length).collect();
+                payload_raw.insert(0, payload_type);
 
-                let payload = ControlPayload::from_bytes(payload_buf).ok_or(
-                    std::io::Error::new(std::io::ErrorKind::Other, "control payload is invalid"),
-                )?;
+                let payload = ControlPayload::from_bytes(payload_raw)?;
 
-                Ok(Self::Control { payload })
+                Some(Self::Control { payload })
             }
 
             // Screen
             7 => {
-                let bytes = read_length_and_data(socket)?;
+                let bytes = read_length_and_data(&mut bytes)?;
 
-                Ok(Self::Screen { bytes })
+                Some(Self::Screen { bytes })
             }
 
             // MergeUnready
-            8 => Ok(Self::MergeUnready),
+            8 => Some(Self::MergeUnready),
 
             // SessionExit
-            9 => Ok(Self::SessionExit),
+            9 => Some(Self::SessionExit),
 
             // RequestControl
             10 => {
-                let username = String::from_utf8(read_length_and_data(socket)?)
+                let username = String::from_utf8(read_length_and_data(&mut bytes)?)
                     .expect("bytes should be valid utf8.");
-                Ok(Self::RequestControl { username })
+                Some(Self::RequestControl { username })
             }
 
             // DenyControl
             11 => {
-                let username = String::from_utf8(read_length_and_data(socket)?)
+                let username = String::from_utf8(read_length_and_data(&mut bytes)?)
                     .expect("bytes should be valid utf8.");
-                Ok(Self::DenyControl { username })
+                Some(Self::DenyControl { username })
             }
 
             // SignOut
-            12 => Ok(Self::SignOut),
+            12 => Some(Self::SignOut),
 
             // Shutdown
-            13 => Ok(Self::Shutdown),
+            13 => Some(Self::Shutdown),
 
             // SessionEnd
-            14 => Ok(Self::SessionEnd),
+            14 => Some(Self::SessionEnd),
 
             // Chat
             15 => {
-                let message = String::from_utf8(read_length_and_data(socket)?)
+                let message = String::from_utf8(read_length_and_data(&mut bytes)?)
                     .expect("bytes should be valid utf8");
-                Ok(Self::Chat { message })
+                Some(Self::Chat { message })
             }
 
+            // WatchRecording
             16 => {
-                let mut id_buf = [0u8; 4];
-                socket.read_exact(&mut id_buf).unwrap();
-                let id = i32::from_be_bytes(id_buf);
+                let id = get_i32_from_packet(&mut bytes)?;
 
-                Ok(Self::WatchRecording { id })
+                Some(Self::WatchRecording { id })
             }
 
+            // RecordingName
             17 => {
-                let mut id_buf = [0u8; 4];
-                socket.read_exact(&mut id_buf).unwrap();
-                let id = i32::from_be_bytes(id_buf);
-                let name = String::from_utf8(read_length_and_data(socket)?)
+                let id = get_i32_from_packet(&mut bytes)?;
+                let name = String::from_utf8(read_length_and_data(&mut bytes)?)
                     .expect("bytes should be valid utf8");
 
-                Ok(Self::RecordingName { id, name })
+                Some(Self::RecordingName { id, name })
             }
 
+            // DenyJoin
             18 => {
-                let username = String::from_utf8(read_length_and_data(socket)?)
+                let username = String::from_utf8(read_length_and_data(&mut bytes)?)
                     .expect("bytes should be valid utf8");
 
-                Ok(Self::DenyJoin { username })
+                Some(Self::DenyJoin { username })
             }
 
-            19 => Ok(Self::SeekInit),
+            // SeekInit
+            19 => Some(Self::SeekInit),
 
+            // SeekTo
             20 => {
-                let mut time_seconds_buf = [0u8; 4];
-                socket.read_exact(&mut time_seconds_buf).unwrap();
-                let time_seconds = i32::from_be_bytes(time_seconds_buf);
+                let time_seconds = get_i32_from_packet(&mut bytes)?;
 
-                Ok(Self::SeekTo { time_seconds })
+                Some(Self::SeekTo { time_seconds })
             }
 
-            _ => Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "packet type is invalid",
-            )),
+            _ => None,
         }
     }
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
 pub enum ControlPayload {
     MouseMove {
         mouse_x: u32,

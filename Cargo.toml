@@ -17,6 +17,8 @@ md5 = "0.7.0"
 rusqlite = { version = "0.35", features = ["bundled"] }
 chrono = "0.4.41"
 uuid = { version = "1.16", features = ["v4"] }
+rsa = "0.9.8"
+aes-gcm = "0.10.3"
 
 [patch.crates-io]
 egui = { git = "https://github.com/Yoyo383/egui", branch = "master" }

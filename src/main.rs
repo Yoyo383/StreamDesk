@@ -4,6 +4,7 @@ use std::thread;
 
 use eframe::{egui, NativeOptions};
 use login_scene::LoginScene;
+use remote_desktop::secure_channel::SecureChannel;
 use remote_desktop::{Scene, SceneChange};
 
 mod host_scene;
@@ -13,15 +14,19 @@ mod menu_scene;
 mod modifiers_state;
 mod watch_scene;
 
-fn connect_to_server(sender: Sender<Option<TcpStream>>) {
+fn connect_to_server(sender: Sender<Option<SecureChannel>>) {
     thread::spawn(move || match TcpStream::connect("127.0.0.1:7643") {
-        Ok(socket) => sender.send(Some(socket)),
+        Ok(socket) => {
+            let channel = SecureChannel::new_client(socket).unwrap();
+            sender.send(Some(channel))
+        }
+
         Err(_) => sender.send(None),
     });
 }
 
 struct MyApp {
-    socket: Option<TcpStream>,
+    channel: Option<SecureChannel>,
     scene: Box<dyn Scene>,
 }
 
@@ -30,11 +35,10 @@ impl MyApp {
         let (sender, receiver) = mpsc::channel();
         connect_to_server(sender);
 
-        // let menu = MenuScene::new(Some(receiver), false);
         let login = LoginScene::new(Some(receiver), false);
 
         Self {
-            socket: None,
+            channel: None,
             scene: Box::new(login),
         }
     }
@@ -42,7 +46,7 @@ impl MyApp {
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let scene_change = self.scene.as_mut().update(ctx, &mut self.socket);
+        let scene_change = self.scene.as_mut().update(ctx, &mut self.channel);
         match scene_change {
             SceneChange::To(scene) => self.scene = scene,
             _ => (),
@@ -52,7 +56,7 @@ impl eframe::App for MyApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.scene.as_mut().on_exit(&mut self.socket);
+        self.scene.as_mut().on_exit(&mut self.channel);
     }
 }
 

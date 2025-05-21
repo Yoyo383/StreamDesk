@@ -4,14 +4,16 @@ use h264_reader::{
     nal::{Nal, RefNal, UnitType},
     push::NalInterest,
 };
-use remote_desktop::{chat_ui, protocol::ControlPayload, users_list, Scene, SceneChange, UserType};
+use remote_desktop::{
+    chat_ui, protocol::ControlPayload, secure_channel::SecureChannel, users_list, Scene,
+    SceneChange, UserType,
+};
 
 use eframe::egui::PointerButton;
 use remote_desktop::protocol::Packet;
 use std::{
     collections::{HashMap, HashSet},
     io::Read,
-    net::TcpStream,
     process::{Child, ChildStdout, Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -61,7 +63,7 @@ fn start_ffmpeg() -> Child {
 }
 
 fn thread_send_screen(
-    mut socket: TcpStream,
+    mut channel: SecureChannel,
     mut stdout: ChildStdout,
     stop_flag: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
@@ -81,8 +83,7 @@ fn thread_send_screen(
 
             // SPS means that a keyframe is on its way
             if nal_type == UnitType::SeqParameterSet {
-                let merge_unready = Packet::MergeUnready;
-                merge_unready.send(&mut socket).unwrap();
+                channel.send(Packet::MergeUnready).unwrap();
             }
 
             // sending the NAL (with the start)
@@ -91,8 +92,7 @@ fn thread_send_screen(
                 .read_to_end(&mut nal_bytes)
                 .expect("should be able to read NAL");
 
-            let screen_packet = Packet::Screen { bytes: nal_bytes };
-            screen_packet.send(&mut socket).unwrap();
+            channel.send(Packet::Screen { bytes: nal_bytes }).unwrap();
 
             NalInterest::Ignore
         });
@@ -115,14 +115,14 @@ fn thread_send_screen(
 }
 
 fn thread_read_socket(
-    mut socket: TcpStream,
+    mut channel: SecureChannel,
     usernames: Arc<Mutex<HashMap<String, UserType>>>,
     requesting_control: Arc<Mutex<HashSet<String>>>,
     requesting_join: Arc<Mutex<HashSet<String>>>,
     chat_log: Arc<Mutex<Vec<String>>>,
 ) -> JoinHandle<()> {
     thread::spawn(move || loop {
-        let packet = Packet::receive(&mut socket).unwrap_or_default();
+        let packet = channel.receive().unwrap_or_default();
 
         match packet {
             Packet::Join { username, .. } => {
@@ -313,14 +313,13 @@ pub struct HostScene {
 }
 
 impl HostScene {
-    pub fn new(session_code: String, socket: &mut TcpStream, username: String) -> Self {
+    pub fn new(session_code: String, channel: &mut SecureChannel, username: String) -> Self {
         let mut command = start_ffmpeg();
         let stdout = command.stdout.take().unwrap();
 
         let stop_flag = Arc::new(AtomicBool::new(false));
 
-        let thread_send_screen =
-            thread_send_screen(socket.try_clone().unwrap(), stdout, stop_flag.clone());
+        let thread_send_screen = thread_send_screen(channel.clone(), stdout, stop_flag.clone());
 
         let mut usernames_types = HashMap::new();
         usernames_types.insert(username.clone(), UserType::Host);
@@ -332,7 +331,7 @@ impl HostScene {
         let chat_log = Arc::new(Mutex::new(Vec::new()));
 
         let thread_read_socket = thread_read_socket(
-            socket.try_clone().unwrap(),
+            channel.clone(),
             usernames.clone(),
             requesting_control.clone(),
             requesting_join.clone(),
@@ -357,24 +356,23 @@ impl HostScene {
         }
     }
 
-    fn disconnect(&mut self, socket: &mut TcpStream) -> SceneChange {
+    fn disconnect(&mut self, channel: &mut SecureChannel) -> SceneChange {
         self.stop_flag.store(true, Ordering::Relaxed);
 
         let _ = self.thread_send_screen.take().unwrap().join();
         let _ = self.ffmpeg_command.kill();
 
-        let session_exit = Packet::SessionExit;
-        session_exit.send(socket).unwrap();
+        channel.send(Packet::SessionExit).unwrap();
 
         let _ = self.thread_read_socket.take().unwrap().join();
 
-        SceneChange::To(Box::new(MenuScene::new(self.username.clone(), socket)))
+        SceneChange::To(Box::new(MenuScene::new(self.username.clone(), channel)))
     }
 }
 
 impl Scene for HostScene {
-    fn update(&mut self, ctx: &egui::Context, socket: &mut Option<TcpStream>) -> SceneChange {
-        let socket = socket.as_mut().unwrap();
+    fn update(&mut self, ctx: &egui::Context, channel: &mut Option<SecureChannel>) -> SceneChange {
+        let channel = channel.as_mut().unwrap();
         let mut result: SceneChange = SceneChange::None;
 
         egui::SidePanel::right("chat").show(ctx, |ui| {
@@ -382,7 +380,7 @@ impl Scene for HostScene {
                 ui,
                 self.chat_log.lock().unwrap(),
                 &mut self.chat_message,
-                socket,
+                channel,
             );
         });
 
@@ -399,7 +397,7 @@ impl Scene for HostScene {
                 let deny_packet = Packet::DenyControl {
                     username: controller,
                 };
-                deny_packet.send(socket).unwrap();
+                channel.send(deny_packet).unwrap();
             }
 
             {
@@ -422,7 +420,7 @@ impl Scene for HostScene {
                             let deny_packet = Packet::DenyControl {
                                 username: user.to_string(),
                             };
-                            deny_packet.send(socket).unwrap();
+                            channel.send(deny_packet).unwrap();
                         }
                     });
                 }
@@ -443,21 +441,21 @@ impl Scene for HostScene {
                         let deny_packet = Packet::DenyControl {
                             username: controller.to_string(),
                         };
-                        deny_packet.send(socket).unwrap();
+                        channel.send(deny_packet).unwrap();
                     }
 
                     // send to allowed user
                     let allow_packet = Packet::RequestControl {
                         username: user_handled.to_string(),
                     };
-                    allow_packet.send(socket).unwrap();
+                    channel.send(allow_packet).unwrap();
 
                     // send Deny to all other users and clear
                     for user in requesting_control.iter() {
                         let deny_packet = Packet::DenyControl {
                             username: user.to_string(),
                         };
-                        deny_packet.send(socket).unwrap();
+                        channel.send(deny_packet).unwrap();
                     }
 
                     // clear requesting users
@@ -477,11 +475,11 @@ impl Scene for HostScene {
                         if ui.button("Allow").clicked() {
                             user_handled = user.to_string();
 
-                            let packet = Packet::Join {
+                            let join_packet = Packet::Join {
                                 code: 0,
                                 username: user.to_string(),
                             };
-                            packet.send(socket).unwrap();
+                            channel.send(join_packet).unwrap();
                         }
 
                         if ui.button("Deny").clicked() {
@@ -490,7 +488,7 @@ impl Scene for HostScene {
                             let deny_packet = Packet::DenyJoin {
                                 username: user.to_string(),
                             };
-                            deny_packet.send(socket).unwrap();
+                            channel.send(deny_packet).unwrap();
                         }
                     });
                 }
@@ -501,26 +499,21 @@ impl Scene for HostScene {
             }
 
             if ui.button("End Session").clicked() {
-                result = self.disconnect(socket);
+                result = self.disconnect(channel);
             }
         });
 
         result
     }
 
-    fn on_exit(&mut self, socket: &mut Option<TcpStream>) {
-        let socket = socket.as_mut().unwrap();
+    fn on_exit(&mut self, channel: &mut Option<SecureChannel>) {
+        let channel = channel.as_mut().unwrap();
 
-        self.disconnect(socket);
+        self.disconnect(channel);
 
-        let signout_packet = Packet::SignOut;
-        signout_packet.send(socket).unwrap();
+        channel.send(Packet::SignOut).unwrap();
+        channel.send(Packet::Shutdown).unwrap();
 
-        let shutdown_packet = Packet::Shutdown;
-        shutdown_packet.send(socket).unwrap();
-
-        socket
-            .shutdown(std::net::Shutdown::Both)
-            .expect("Could not close socket.");
+        channel.close();
     }
 }

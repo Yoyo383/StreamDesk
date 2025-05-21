@@ -4,11 +4,12 @@ use participant::handle_participant;
 use rand::Rng;
 use remote_desktop::{
     protocol::{Packet, ResultPacket},
+    secure_channel::SecureChannel,
     UserType,
 };
 use std::{
     collections::{HashMap, HashSet},
-    net::{TcpListener, TcpStream},
+    net::TcpListener,
     path::PathBuf,
     process::Command,
     sync::{
@@ -93,7 +94,7 @@ fn query_recordings(conn: &rusqlite::Connection, user_id: i32) -> HashMap<i32, R
 }
 
 fn handle_client(
-    mut socket: TcpStream,
+    mut channel: SecureChannel,
     sessions: SessionHashMap,
     logged_in_users: Arc<Mutex<HashSet<String>>>,
 ) {
@@ -103,16 +104,14 @@ fn handle_client(
 
     loop {
         loop {
-            let packet = Packet::receive(&mut socket).unwrap();
+            let packet = channel.receive().unwrap();
 
             if packet == Packet::Shutdown {
-                socket
-                    .shutdown(std::net::Shutdown::Both)
-                    .expect("Could not close socket.");
+                channel.close();
                 return;
             }
 
-            let result = login_or_register(packet, &mut socket, &conn, logged_in_users.clone());
+            let result = login_or_register(packet, &mut channel, &conn, logged_in_users.clone());
             if let Some((user, id)) = result {
                 username = user;
                 user_id = id;
@@ -129,14 +128,13 @@ fn handle_client(
                     id: *id,
                     name: recording.time.clone(),
                 };
-                packet.send(&mut socket).unwrap();
+                channel.send(packet).unwrap();
             }
-            let end_packet = Packet::None;
-            end_packet.send(&mut socket).unwrap();
+            channel.send(Packet::None).unwrap();
 
             loop {
                 // receive first packet
-                let packet = Packet::receive(&mut socket).unwrap();
+                let packet = channel.receive().unwrap();
 
                 match packet {
                     Packet::SignOut => {
@@ -150,7 +148,7 @@ fn handle_client(
                         let code = generate_session_code(&sessions_guard);
 
                         let host_connection = Connection {
-                            socket: socket.try_clone().unwrap(),
+                            channel: channel.clone(),
                             connection_type: ConnectionType::Host,
                             user_type: UserType::Host,
                             join_request_sender: None,
@@ -164,11 +162,12 @@ fn handle_client(
                         drop(sessions_guard);
 
                         // send back the session code
-                        let success = ResultPacket::Success(format!("{}", code));
-                        success.send(&mut socket).unwrap();
+                        channel
+                            .send(ResultPacket::Success(format!("{}", code)))
+                            .unwrap();
 
                         handle_host(
-                            &mut socket,
+                            &mut channel,
                             session,
                             sessions.clone(),
                             code,
@@ -180,7 +179,7 @@ fn handle_client(
                         break;
                     }
 
-                    Packet::Join { code, ref username } => {
+                    Packet::Join { code, username } => {
                         let sessions = sessions.lock().unwrap();
 
                         // check if the code exists
@@ -192,15 +191,19 @@ fn handle_client(
                             let mut session_guard = session.lock().unwrap();
 
                             let success = ResultPacket::Success("Joining".to_owned());
-                            success.send(&mut socket).unwrap();
+                            channel.send(success).unwrap();
 
                             // send host the join request
-                            packet.send(&mut session_guard.host()).unwrap();
+                            let packet = Packet::Join {
+                                code,
+                                username: username.clone(),
+                            };
+                            session_guard.host().send(packet).unwrap();
 
                             let (sender, receiver) = mpsc::channel();
 
                             let connection = Connection {
-                                socket: socket.try_clone().unwrap(),
+                                channel: channel.clone(),
                                 connection_type: ConnectionType::Unready,
                                 user_type: UserType::Participant,
                                 join_request_sender: Some(sender),
@@ -213,7 +216,7 @@ fn handle_client(
 
                             // if host allowed user then continue
                             if receiver.recv().unwrap() {
-                                handle_participant(&mut socket, session.clone(), username.clone());
+                                handle_participant(&mut channel, session.clone(), username.clone());
                                 break;
                             }
                         } else {
@@ -222,7 +225,7 @@ fn handle_client(
                                 "No session found with code {}",
                                 code
                             ));
-                            failure.send(&mut socket).unwrap();
+                            channel.send(failure).unwrap();
                         }
                     }
 
@@ -232,15 +235,15 @@ fn handle_client(
                             Some(recording) => {
                                 let num_of_frames = get_duration_frames(&recording.filename);
                                 let success = ResultPacket::Success(num_of_frames.to_string());
-                                success.send(&mut socket).unwrap();
+                                channel.send(success).unwrap();
 
-                                handle_watching(&mut socket, &recording.filename);
+                                handle_watching(&mut channel, &recording.filename);
                                 break;
                             }
                             None => {
                                 let failure =
                                     ResultPacket::Failure("No recording found.".to_owned());
-                                failure.send(&mut socket).unwrap();
+                                channel.send(failure).unwrap();
                             }
                         }
                     }
@@ -290,7 +293,11 @@ fn main() {
             Ok(socket) => {
                 let sessions_clone = sessions.clone();
                 let logged_in_users_clone = logged_in_users.clone();
-                thread::spawn(move || handle_client(socket, sessions_clone, logged_in_users_clone));
+
+                let channel = SecureChannel::new_server(socket).unwrap();
+                thread::spawn(move || {
+                    handle_client(channel, sessions_clone, logged_in_users_clone)
+                });
             }
             Err(e) => eprintln!("Couldn't accept client: {e:?}"),
         }

@@ -1,12 +1,10 @@
-use std::net::TcpStream;
-
-use remote_desktop::{protocol::Packet, UserType};
+use remote_desktop::{protocol::Packet, secure_channel::SecureChannel, UserType};
 
 use crate::{structs::*, SharedSession};
 
-pub fn handle_participant(socket: &mut TcpStream, session: SharedSession, username: String) {
+pub fn handle_participant(channel: &mut SecureChannel, session: SharedSession, username: String) {
     loop {
-        let packet = Packet::receive(socket).unwrap();
+        let packet = channel.receive().unwrap();
 
         match packet {
             Packet::Control { .. } => {
@@ -15,7 +13,7 @@ pub fn handle_participant(socket: &mut TcpStream, session: SharedSession, userna
                 if session.connections.get(&username).unwrap().connection_type
                     == ConnectionType::Controller
                 {
-                    packet.send(&mut session.host()).unwrap();
+                    session.host().send(packet).unwrap();
                 }
             }
 
@@ -26,13 +24,13 @@ pub fn handle_participant(socket: &mut TcpStream, session: SharedSession, userna
                 if session.connections.get(&username).unwrap().connection_type
                     == ConnectionType::Participant
                 {
-                    packet.send(&mut session.host()).unwrap();
+                    session.host().send(packet).unwrap();
                 } else {
                     // send DenyRequest because not participant
                     let deny_packet = Packet::DenyControl {
                         username: username.clone(),
                     };
-                    deny_packet.send(socket).unwrap();
+                    channel.send(deny_packet).unwrap();
                 }
             }
 
@@ -47,8 +45,7 @@ pub fn handle_participant(socket: &mut TcpStream, session: SharedSession, userna
                 };
                 session.broadcast_all(user_update_packet);
 
-                let session_exit = Packet::SessionExit;
-                session_exit.send(socket).unwrap();
+                channel.send(Packet::SessionExit).unwrap();
 
                 break;
             }

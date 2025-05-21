@@ -1,6 +1,6 @@
-use std::{collections::HashMap, net::TcpStream, sync::mpsc::Sender};
+use std::{collections::HashMap, sync::mpsc::Sender};
 
-use remote_desktop::{protocol::Packet, UserType};
+use remote_desktop::{protocol::Packet, secure_channel::SecureChannel, UserType};
 
 #[derive(PartialEq, Eq, Debug)]
 pub enum ConnectionType {
@@ -15,9 +15,8 @@ pub struct Recording {
     pub time: String,
 }
 
-#[derive(Debug)]
 pub struct Connection {
-    pub socket: TcpStream,
+    pub channel: SecureChannel,
     pub connection_type: ConnectionType,
     pub user_type: UserType,
     pub join_request_sender: Option<Sender<bool>>,
@@ -41,7 +40,7 @@ impl Session {
 
     pub fn broadcast_all(&mut self, packet: Packet) {
         for (_, connection) in &mut self.connections {
-            packet.send(&mut connection.socket).unwrap();
+            connection.channel.send(packet.clone()).unwrap();
         }
     }
 
@@ -50,19 +49,18 @@ impl Session {
             if connection.connection_type == ConnectionType::Participant
                 || connection.connection_type == ConnectionType::Controller
             {
-                packet.send(&mut connection.socket).unwrap();
+                connection.channel.send(packet.clone()).unwrap();
             }
         }
     }
 
-    pub fn host(&self) -> TcpStream {
+    pub fn host(&self) -> SecureChannel {
         self.connections
             .iter()
             .find(|(_, conn)| conn.connection_type == ConnectionType::Host)
             .unwrap()
             .1
-            .socket
-            .try_clone()
-            .unwrap()
+            .channel
+            .clone()
     }
 }

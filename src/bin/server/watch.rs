@@ -5,11 +5,10 @@ use h264_reader::{
     push::NalInterest,
 };
 
-use remote_desktop::protocol::Packet;
+use remote_desktop::{protocol::Packet, secure_channel::SecureChannel};
 
 use std::{
     io::Read,
-    net::TcpStream,
     path::PathBuf,
     process::{Child, ChildStdout, Command, Stdio},
     sync::{
@@ -49,7 +48,7 @@ fn ffmpeg_send_recording(filename: &str, time_seconds: i32) -> Child {
 }
 
 fn thread_send_screen(
-    mut socket: TcpStream,
+    mut channel: SecureChannel,
     mut stdout: ChildStdout,
     stop_flag: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
@@ -71,8 +70,7 @@ fn thread_send_screen(
                 .read_to_end(&mut nal_bytes)
                 .expect("should be able to read NAL");
 
-            let screen_packet = Packet::Screen { bytes: nal_bytes };
-            screen_packet.send(&mut socket).unwrap();
+            channel.send(Packet::Screen { bytes: nal_bytes }).unwrap();
 
             NalInterest::Ignore
         });
@@ -92,25 +90,24 @@ fn thread_send_screen(
             }
         }
 
-        let none = Packet::None;
-        none.send(&mut socket).unwrap();
+        channel.send(Packet::None).unwrap();
     })
 }
 
-pub fn handle_watching(socket: &mut TcpStream, filename: &str) {
+pub fn handle_watching(channel: &mut SecureChannel, filename: &str) {
     let mut ffmpeg = ffmpeg_send_recording(filename, 0);
     let mut stdout = ffmpeg.stdout.take().unwrap();
 
     let mut stop_flag = Arc::new(AtomicBool::new(false));
 
     let mut thread_send = Some(thread_send_screen(
-        socket.try_clone().unwrap(),
+        channel.clone(),
         stdout,
         stop_flag.clone(),
     ));
 
     loop {
-        let packet = Packet::receive(socket).unwrap();
+        let packet = channel.receive().unwrap();
 
         match packet {
             Packet::SeekInit => {
@@ -120,8 +117,7 @@ pub fn handle_watching(socket: &mut TcpStream, filename: &str) {
                 let _ = thread_send.take().unwrap().join();
 
                 // send session exit
-                let packet = Packet::SessionExit;
-                packet.send(socket).unwrap();
+                channel.send(Packet::SessionExit).unwrap();
             }
 
             Packet::SeekTo { time_seconds } => {
@@ -130,7 +126,7 @@ pub fn handle_watching(socket: &mut TcpStream, filename: &str) {
                 stdout = ffmpeg.stdout.take().unwrap();
                 stop_flag = Arc::new(AtomicBool::new(false));
                 thread_send = Some(thread_send_screen(
-                    socket.try_clone().unwrap(),
+                    channel.clone(),
                     stdout,
                     stop_flag.clone(),
                 ));
@@ -142,8 +138,7 @@ pub fn handle_watching(socket: &mut TcpStream, filename: &str) {
                 let _ = ffmpeg.kill();
                 let _ = thread_send.take().unwrap().join();
 
-                let packet = Packet::SessionExit;
-                packet.send(socket).unwrap();
+                channel.send(Packet::SessionExit).unwrap();
 
                 break;
             }

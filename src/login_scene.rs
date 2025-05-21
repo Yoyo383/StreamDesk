@@ -1,8 +1,9 @@
-use std::{net::TcpStream, sync::mpsc::Receiver};
+use std::sync::mpsc::Receiver;
 
 use eframe::egui::{self, Align, Color32, FontId, Layout, RichText, SelectableLabel, TextEdit};
 use remote_desktop::{
     protocol::{Packet, ResultPacket},
+    secure_channel::SecureChannel,
     Scene, SceneChange,
 };
 
@@ -15,7 +16,7 @@ pub struct LoginScene {
     register_password: String,
     register_confirm_password: String,
 
-    socket_receiver: Option<Receiver<Option<TcpStream>>>,
+    socket_receiver: Option<Receiver<Option<SecureChannel>>>,
     connected_to_server: bool,
     failed_to_connect: bool,
 
@@ -27,7 +28,7 @@ pub struct LoginScene {
 
 impl LoginScene {
     pub fn new(
-        socket_receiver: Option<Receiver<Option<TcpStream>>>,
+        socket_receiver: Option<Receiver<Option<SecureChannel>>>,
         connected_to_server: bool,
     ) -> Self {
         Self {
@@ -48,16 +49,16 @@ impl LoginScene {
         }
     }
 
-    fn login(&mut self, socket: &mut TcpStream) -> SceneChange {
+    fn login(&mut self, channel: &mut SecureChannel) -> SceneChange {
         let password = format!("{:x}", md5::compute(self.login_password.clone()));
 
         let login_packet = Packet::Login {
             username: self.login_username.clone(),
             password,
         };
-        login_packet.send(socket).unwrap();
+        channel.send(login_packet).unwrap();
 
-        let result = ResultPacket::receive(socket).unwrap();
+        let result = channel.receive().unwrap();
         match result {
             ResultPacket::Failure(msg) => {
                 self.error_message_login = msg;
@@ -66,12 +67,12 @@ impl LoginScene {
 
             ResultPacket::Success(_) => SceneChange::To(Box::new(MenuScene::new(
                 self.login_username.clone(),
-                socket,
+                channel,
             ))),
         }
     }
 
-    fn register(&mut self, socket: &mut TcpStream) -> SceneChange {
+    fn register(&mut self, channel: &mut SecureChannel) -> SceneChange {
         // make sure passwords match
         if self.register_password != self.register_confirm_password {
             self.error_message_register = "Passwords do not match.".to_string();
@@ -106,9 +107,9 @@ impl LoginScene {
             username: self.register_username.clone(),
             password,
         };
-        register_packet.send(socket).unwrap();
+        channel.send(register_packet).unwrap();
 
-        let result = ResultPacket::receive(socket).unwrap();
+        let result = channel.receive().unwrap();
         match result {
             ResultPacket::Failure(msg) => {
                 self.error_message_register = msg;
@@ -117,20 +118,20 @@ impl LoginScene {
 
             ResultPacket::Success(_) => SceneChange::To(Box::new(MenuScene::new(
                 self.register_username.clone(),
-                socket,
+                channel,
             ))),
         }
     }
 }
 
 impl Scene for LoginScene {
-    fn update(&mut self, ctx: &egui::Context, socket: &mut Option<TcpStream>) -> SceneChange {
+    fn update(&mut self, ctx: &egui::Context, channel: &mut Option<SecureChannel>) -> SceneChange {
         let mut result: SceneChange = SceneChange::None;
 
         if !self.connected_to_server {
             match self.socket_receiver.as_ref().unwrap().try_recv() {
-                Ok(Some(new_socket)) => {
-                    *socket = Some(new_socket);
+                Ok(Some(new_channel)) => {
+                    *channel = Some(new_channel);
                     self.connected_to_server = true;
                 }
                 Ok(None) => self.failed_to_connect = true,
@@ -218,7 +219,7 @@ impl Scene for LoginScene {
                         )
                         .clicked()
                     {
-                        result = self.login(socket.as_mut().unwrap());
+                        result = self.login(channel.as_mut().unwrap());
                     }
 
                     ui.add_space(10.0);
@@ -261,7 +262,7 @@ impl Scene for LoginScene {
                         )
                         .clicked()
                     {
-                        result = self.register(socket.as_mut().unwrap());
+                        result = self.register(channel.as_mut().unwrap());
                     }
 
                     ui.add_space(10.0);
@@ -277,14 +278,11 @@ impl Scene for LoginScene {
         result
     }
 
-    fn on_exit(&mut self, socket: &mut Option<TcpStream>) {
-        let socket = socket.as_mut().unwrap();
+    fn on_exit(&mut self, channel: &mut Option<SecureChannel>) {
+        let channel = channel.as_mut().unwrap();
 
-        let shutdown_packet = Packet::Shutdown;
-        shutdown_packet.send(socket).unwrap();
+        channel.send(Packet::Shutdown).unwrap();
 
-        socket
-            .shutdown(std::net::Shutdown::Both)
-            .expect("Could not close socket.");
+        channel.close();
     }
 }

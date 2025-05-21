@@ -1,7 +1,6 @@
 use std::{
     collections::VecDeque,
     io::{Read, Write},
-    net::TcpStream,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -12,7 +11,7 @@ use std::{
 };
 
 use eframe::egui::{self, pos2, Color32, ImageSource, Rect, Sense, Stroke, Ui, Vec2};
-use remote_desktop::{protocol::Packet, Scene, SceneChange};
+use remote_desktop::{protocol::Packet, secure_channel::SecureChannel, Scene, SceneChange};
 
 use crate::menu_scene::MenuScene;
 
@@ -47,12 +46,12 @@ fn start_ffmpeg() -> Child {
     ffmpeg
 }
 
-fn thread_receive_socket(mut socket: TcpStream, stdin: ChildStdin) -> JoinHandle<()> {
+fn thread_receive_socket(mut channel: SecureChannel, stdin: ChildStdin) -> JoinHandle<()> {
     thread::spawn(move || {
         let mut stdin = Some(stdin);
 
         loop {
-            let packet = Packet::receive(&mut socket).unwrap_or_default();
+            let packet = channel.receive().unwrap();
 
             match packet {
                 Packet::Screen { bytes } => {
@@ -126,7 +125,7 @@ pub struct WatchScene {
 }
 
 impl WatchScene {
-    pub fn new(username: String, duration: i32, socket: &mut TcpStream) -> Self {
+    pub fn new(username: String, duration: i32, channel: &mut SecureChannel) -> Self {
         let mut ffmpeg = start_ffmpeg();
         let stdin = ffmpeg.stdin.take().unwrap();
         let stdout = ffmpeg.stdout.take().unwrap();
@@ -135,7 +134,7 @@ impl WatchScene {
 
         let stop_flag = Arc::new(AtomicBool::new(false));
 
-        let thread_receive_socket = thread_receive_socket(socket.try_clone().unwrap(), stdin);
+        let thread_receive_socket = thread_receive_socket(channel.clone(), stdin);
         let thread_read_decoded =
             thread_read_decoded(stdout, frame_queue.clone(), stop_flag.clone());
 
@@ -193,9 +192,9 @@ impl WatchScene {
             .rect_stroke(centered_rect, 0.0, stroke, egui::StrokeKind::Outside);
     }
 
-    fn seek_recording(&mut self, delta: i32, socket: &mut TcpStream) {
+    fn seek_recording(&mut self, delta: i32, channel: &mut SecureChannel) {
         // send seek init
-        Packet::SeekInit.send(socket).unwrap();
+        channel.send(Packet::SeekInit).unwrap();
 
         // stop everything
         self.stop_flag.store(true, Ordering::Relaxed);
@@ -215,8 +214,7 @@ impl WatchScene {
         let time_seconds = (self.current_frame_number / 30 + delta).clamp(0, self.duration / 30);
         self.current_frame_number = time_seconds * 30;
 
-        let seek_to = Packet::SeekTo { time_seconds };
-        seek_to.send(socket).unwrap();
+        channel.send(Packet::SeekTo { time_seconds }).unwrap();
 
         // start everything from scratch
 
@@ -226,8 +224,7 @@ impl WatchScene {
 
         self.stop_flag.store(false, Ordering::Relaxed);
 
-        self.thread_receive_socket =
-            Some(thread_receive_socket(socket.try_clone().unwrap(), stdin));
+        self.thread_receive_socket = Some(thread_receive_socket(channel.clone(), stdin));
         self.thread_read_decoded = Some(thread_read_decoded(
             stdout,
             self.frame_queue.clone(),
@@ -235,9 +232,8 @@ impl WatchScene {
         ));
     }
 
-    fn exit(&mut self, socket: &mut TcpStream) -> SceneChange {
-        let session_exit = Packet::SessionExit;
-        session_exit.send(socket).unwrap();
+    fn exit(&mut self, channel: &mut SecureChannel) -> SceneChange {
+        channel.send(Packet::SessionExit).unwrap();
 
         self.stop_flag.store(true, Ordering::Relaxed);
 
@@ -250,13 +246,13 @@ impl WatchScene {
         let _ = self.thread_read_decoded.take().unwrap().join();
         let _ = self.ffmpeg_command.kill();
 
-        SceneChange::To(Box::new(MenuScene::new(self.username.clone(), socket)))
+        SceneChange::To(Box::new(MenuScene::new(self.username.clone(), channel)))
     }
 }
 
 impl Scene for WatchScene {
-    fn update(&mut self, ctx: &egui::Context, socket: &mut Option<TcpStream>) -> SceneChange {
-        let socket = socket.as_mut().unwrap();
+    fn update(&mut self, ctx: &egui::Context, channel: &mut Option<SecureChannel>) -> SceneChange {
+        let channel = channel.as_mut().unwrap();
         let mut result = SceneChange::None;
 
         let now = Instant::now();
@@ -325,7 +321,7 @@ impl Scene for WatchScene {
                     }
                     // skip forward 5 seconds
                     if response.clicked() {
-                        self.seek_recording(-5, socket);
+                        self.seek_recording(-5, channel);
                     }
 
                     let skip_forward_button = egui::Button::image(FORWARD_IMAGE).frame(false);
@@ -337,7 +333,7 @@ impl Scene for WatchScene {
                     }
                     // skip forward 5 seconds
                     if response.clicked() {
-                        self.seek_recording(5, socket);
+                        self.seek_recording(5, channel);
                     }
 
                     ui.label(time_string);
@@ -347,7 +343,7 @@ impl Scene for WatchScene {
 
                 ui.vertical_centered(|ui| {
                     if ui.button("Exit").clicked() {
-                        result = self.exit(socket);
+                        result = self.exit(channel);
                     }
                 });
             });
@@ -359,19 +355,14 @@ impl Scene for WatchScene {
         result
     }
 
-    fn on_exit(&mut self, socket: &mut Option<TcpStream>) {
-        let socket = socket.as_mut().unwrap();
+    fn on_exit(&mut self, channel: &mut Option<SecureChannel>) {
+        let channel = channel.as_mut().unwrap();
 
-        self.exit(socket);
+        self.exit(channel);
 
-        let signout_packet = Packet::SignOut;
-        signout_packet.send(socket).unwrap();
+        channel.send(Packet::SignOut).unwrap();
+        channel.send(Packet::Shutdown).unwrap();
 
-        let shutdown_packet = Packet::Shutdown;
-        shutdown_packet.send(socket).unwrap();
-
-        socket
-            .shutdown(std::net::Shutdown::Both)
-            .expect("Could not close socket.");
+        channel.close();
     }
 }

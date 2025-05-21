@@ -3,12 +3,12 @@ use chrono::Local;
 
 use remote_desktop::{
     protocol::{Packet, ResultPacket},
+    secure_channel::SecureChannel,
     UserType,
 };
 use rusqlite::params;
 use std::{
     io::Write,
-    net::TcpStream,
     path::PathBuf,
     process::{Child, Command, Stdio},
 };
@@ -47,7 +47,7 @@ fn insert_recording_to_database(
 }
 
 pub fn handle_host(
-    socket: &mut TcpStream,
+    channel: &mut SecureChannel,
     session: SharedSession,
     sessions: SessionHashMap,
     code: u32,
@@ -62,7 +62,7 @@ pub fn handle_host(
     let mut stdin = ffmpeg.stdin.take().unwrap();
 
     loop {
-        let packet = Packet::receive(socket).unwrap();
+        let packet = channel.receive().unwrap();
 
         match packet {
             Packet::Join { username, .. } => {
@@ -71,7 +71,7 @@ pub fn handle_host(
                 if let Some(mut connection) = session.pending_join.remove(&username) {
                     // notify user they were allowed
                     let success = ResultPacket::Success("Joining".to_string());
-                    success.send(&mut connection.socket).unwrap();
+                    connection.channel.send(success).unwrap();
 
                     // notify user thread
                     let _ = connection.join_request_sender.take().unwrap().send(true);
@@ -83,7 +83,7 @@ pub fn handle_host(
                             joined_before: true,
                             username: username.clone(),
                         };
-                        username_packet.send(&mut connection.socket).unwrap();
+                        channel.send(username_packet).unwrap();
                     }
 
                     session.connections.insert(username.clone(), connection);
@@ -104,7 +104,7 @@ pub fn handle_host(
                 if let Some(connection) = session.pending_join.get_mut(&username) {
                     // notify user they were denied
                     let failure = ResultPacket::Failure("You were denied by the host.".to_string());
-                    failure.send(&mut connection.socket).unwrap();
+                    connection.channel.send(failure).unwrap();
 
                     // notify user thread
                     let _ = connection.join_request_sender.take().unwrap().send(false);
@@ -141,12 +141,16 @@ pub fn handle_host(
                 break;
             }
 
-            Packet::RequestControl { ref username } => {
+            Packet::RequestControl { username } => {
                 let mut session = session.lock().unwrap();
-                if let Some(user_connection) = session.connections.get_mut(username) {
+                if let Some(user_connection) = session.connections.get_mut(&username) {
                     user_connection.connection_type = ConnectionType::Controller;
                     user_connection.user_type = UserType::Controller;
-                    packet.send(&mut user_connection.socket).unwrap();
+
+                    let packet = Packet::RequestControl {
+                        username: username.clone(),
+                    };
+                    user_connection.channel.send(packet).unwrap();
 
                     // notify all users
                     let user_update = Packet::UserUpdate {
@@ -158,20 +162,29 @@ pub fn handle_host(
                 }
             }
 
-            Packet::DenyControl { ref username } => {
+            Packet::DenyControl { username } => {
                 let mut session = session.lock().unwrap();
-                if let Some(user_connection) = session.connections.get_mut(username) {
+                if let Some(user_connection) = session.connections.get_mut(&username) {
+                    let was_controller =
+                        user_connection.connection_type == ConnectionType::Controller;
+
                     user_connection.connection_type = ConnectionType::Participant;
                     user_connection.user_type = UserType::Participant;
-                    packet.send(&mut user_connection.socket).unwrap();
 
-                    // notify all users
-                    let user_update = Packet::UserUpdate {
-                        user_type: UserType::Participant,
-                        joined_before: false,
-                        username: username.to_string(),
+                    let packet = Packet::DenyControl {
+                        username: username.clone(),
                     };
-                    session.broadcast_all(user_update);
+                    user_connection.channel.send(packet).unwrap();
+
+                    // if the user is a controller notify all users
+                    if was_controller {
+                        let user_update = Packet::UserUpdate {
+                            user_type: UserType::Participant,
+                            joined_before: false,
+                            username: username.to_string(),
+                        };
+                        session.broadcast_all(user_update);
+                    }
                 }
             }
 

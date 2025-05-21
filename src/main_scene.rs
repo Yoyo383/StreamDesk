@@ -1,5 +1,6 @@
 use eframe::egui::{self, pos2, Color32, Rect, Sense, Stroke, Ui, Vec2};
 use remote_desktop::protocol::{ControlPayload, Packet};
+use remote_desktop::secure_channel::SecureChannel;
 use remote_desktop::{
     chat_ui, egui_key_to_vk, normalize_mouse_position, users_list, Scene, SceneChange, UserType,
 };
@@ -8,7 +9,6 @@ use crate::{menu_scene::MenuScene, modifiers_state::ModifiersState};
 use std::{
     collections::{HashMap, VecDeque},
     io::{Read, Write},
-    net::TcpStream,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -55,7 +55,7 @@ fn start_ffmpeg() -> Child {
 }
 
 fn thread_receive_socket(
-    mut socket: TcpStream,
+    mut channel: SecureChannel,
     mut stdin: ChildStdin,
     stop_flag: Arc<AtomicBool>,
     usernames: Arc<Mutex<HashMap<String, UserType>>>,
@@ -63,7 +63,7 @@ fn thread_receive_socket(
     chat_log: Arc<Mutex<Vec<String>>>,
 ) -> JoinHandle<()> {
     thread::spawn(move || loop {
-        let packet = Packet::receive(&mut socket).unwrap_or_default();
+        let packet = channel.receive().unwrap_or_default();
 
         match packet {
             Packet::Screen { bytes } => stdin.write_all(&bytes).unwrap(),
@@ -94,14 +94,15 @@ fn thread_receive_socket(
 
             Packet::RequestControl { .. } => {
                 let mut control_msg = control_msg.lock().unwrap();
-                control_msg.clear();
-                control_msg.push_str(CONTROLLING_MSG);
+                *control_msg = CONTROLLING_MSG.to_string();
             }
 
             Packet::DenyControl { .. } => {
                 let mut control_msg = control_msg.lock().unwrap();
-                control_msg.clear();
-                control_msg.push_str(REQUEST_CONTROL_MSG);
+                *control_msg = REQUEST_CONTROL_MSG.to_string();
+
+                let mut chat_log = chat_log.lock().unwrap();
+                chat_log.push("#rYour control request was denied by the host.".to_string());
             }
 
             Packet::SessionExit => {
@@ -112,7 +113,7 @@ fn thread_receive_socket(
 
             Packet::SessionEnd => {
                 stop_flag.store(true, Ordering::Relaxed);
-                packet.send(&mut socket).unwrap();
+                channel.send(packet).unwrap();
                 break;
             }
 
@@ -171,7 +172,7 @@ pub struct MainScene {
 }
 
 impl MainScene {
-    pub fn new(socket: &mut TcpStream, username: String) -> Self {
+    pub fn new(channel: &mut SecureChannel, username: String) -> Self {
         let mut ffmpeg = start_ffmpeg();
         let stdin = ffmpeg.stdin.take().unwrap();
         let stdout = ffmpeg.stdout.take().unwrap();
@@ -187,7 +188,7 @@ impl MainScene {
         let chat_log = Arc::new(Mutex::new(Vec::new()));
 
         let thread_receive_socket = thread_receive_socket(
-            socket.try_clone().unwrap(),
+            channel.clone(),
             stdin,
             stop_flag.clone(),
             usernames.clone(),
@@ -224,7 +225,7 @@ impl MainScene {
         }
     }
 
-    fn handle_input(&mut self, input: &egui::InputState, socket: &mut TcpStream) {
+    fn handle_input(&mut self, input: &egui::InputState, channel: &mut SecureChannel) {
         self.modifiers_state.update(input);
 
         for key in &self.modifiers_state.keys {
@@ -234,7 +235,7 @@ impl MainScene {
                     key: key.key,
                 },
             };
-            key_packet.send(socket).unwrap();
+            channel.send(key_packet).unwrap();
         }
 
         for event in &input.events {
@@ -255,7 +256,7 @@ impl MainScene {
                             button: *button,
                         },
                     };
-                    click_packet.send(socket).unwrap();
+                    channel.send(click_packet).unwrap();
                 }
 
                 egui::Event::Key {
@@ -272,7 +273,7 @@ impl MainScene {
                                 key: vk,
                             },
                         };
-                        key_packet.send(socket).unwrap();
+                        channel.send(key_packet).unwrap();
                     }
                 }
 
@@ -282,7 +283,7 @@ impl MainScene {
                     let mouse_move_packet = Packet::Control {
                         payload: ControlPayload::MouseMove { mouse_x, mouse_y },
                     };
-                    mouse_move_packet.send(socket).unwrap();
+                    channel.send(mouse_move_packet).unwrap();
                 }
 
                 egui::Event::MouseWheel { delta, .. } => {
@@ -291,7 +292,7 @@ impl MainScene {
                             delta: delta.y.signum() as i32,
                         },
                     };
-                    scroll_packet.send(socket).unwrap();
+                    channel.send(scroll_packet).unwrap();
                 }
 
                 _ => (),
@@ -299,7 +300,7 @@ impl MainScene {
         }
     }
 
-    fn central_panel_ui(&mut self, ui: &mut Ui, ctx: &egui::Context, socket: &mut TcpStream) {
+    fn central_panel_ui(&mut self, ui: &mut Ui, ctx: &egui::Context, channel: &mut SecureChannel) {
         let texture = egui::ColorImage::from_rgba_unmultiplied([1920, 1080], &self.current_frame);
         let handle = ctx.load_texture("screen", texture, egui::TextureOptions::default());
 
@@ -336,25 +337,24 @@ impl MainScene {
         // make sure the user is the controller before handling input
         if response.hovered() && self.control_msg.lock().unwrap().as_str() == CONTROLLING_MSG {
             ui.ctx().memory_mut(|mem| mem.request_focus(egui::Id::NULL));
-            ui.input(|input| self.handle_input(input, socket));
+            ui.input(|input| self.handle_input(input, channel));
         }
     }
 
-    fn disconnect(&mut self, socket: &mut TcpStream) -> SceneChange {
-        let session_exit = Packet::SessionExit;
-        session_exit.send(socket).unwrap();
+    fn disconnect(&mut self, channel: &mut SecureChannel) -> SceneChange {
+        channel.send(Packet::SessionExit).unwrap();
 
         let _ = self.thread_receive_socket.take().unwrap().join();
         let _ = self.thread_read_decoded.take().unwrap().join();
         let _ = self.ffmpeg_command.kill();
 
-        SceneChange::To(Box::new(MenuScene::new(self.username.clone(), socket)))
+        SceneChange::To(Box::new(MenuScene::new(self.username.clone(), channel)))
     }
 }
 
 impl Scene for MainScene {
-    fn update(&mut self, ctx: &egui::Context, socket: &mut Option<TcpStream>) -> SceneChange {
-        let socket = socket.as_mut().unwrap();
+    fn update(&mut self, ctx: &egui::Context, channel: &mut Option<SecureChannel>) -> SceneChange {
+        let channel = channel.as_mut().unwrap();
         let mut result: SceneChange = SceneChange::None;
 
         let now = Instant::now();
@@ -374,7 +374,7 @@ impl Scene for MainScene {
             let _ = self.thread_receive_socket.take().unwrap().join();
             let _ = self.thread_read_decoded.take().unwrap().join();
 
-            return SceneChange::To(Box::new(MenuScene::new(self.username.clone(), socket)));
+            return SceneChange::To(Box::new(MenuScene::new(self.username.clone(), channel)));
         }
 
         egui::SidePanel::right("participants").show(ctx, |ui| {
@@ -405,7 +405,7 @@ impl Scene for MainScene {
                         ui,
                         self.chat_log.lock().unwrap(),
                         &mut self.chat_message,
-                        socket,
+                        channel,
                     );
                 }
             }
@@ -416,7 +416,7 @@ impl Scene for MainScene {
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
                     if ui.button("Disconnect").clicked() {
-                        result = self.disconnect(socket);
+                        result = self.disconnect(channel);
                     }
 
                     let mut control_msg = self.control_msg.lock().unwrap();
@@ -428,37 +428,31 @@ impl Scene for MainScene {
                         )
                         .clicked()
                     {
-                        control_msg.clear();
-                        control_msg.push_str(WAITING_CONTROL_MSG);
+                        *control_msg = WAITING_CONTROL_MSG.to_string();
 
                         let request_control = Packet::RequestControl {
                             username: self.username.clone(),
                         };
-                        request_control.send(socket).unwrap();
+                        channel.send(request_control).unwrap();
                     }
                 });
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            self.central_panel_ui(ui, ctx, socket);
+            self.central_panel_ui(ui, ctx, channel);
         });
 
         result
     }
 
-    fn on_exit(&mut self, socket: &mut Option<TcpStream>) {
-        let socket = socket.as_mut().unwrap();
+    fn on_exit(&mut self, channel: &mut Option<SecureChannel>) {
+        let channel = channel.as_mut().unwrap();
 
-        self.disconnect(socket);
+        self.disconnect(channel);
 
-        let signout_packet = Packet::SignOut;
-        signout_packet.send(socket).unwrap();
+        channel.send(Packet::SignOut).unwrap();
+        channel.send(Packet::Shutdown).unwrap();
 
-        let shutdown_packet = Packet::Shutdown;
-        shutdown_packet.send(socket).unwrap();
-
-        socket
-            .shutdown(std::net::Shutdown::Both)
-            .expect("Could not close socket.");
+        channel.close();
     }
 }

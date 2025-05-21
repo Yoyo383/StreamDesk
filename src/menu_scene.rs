@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    net::TcpStream,
     sync::mpsc::{self, Receiver},
     thread,
 };
@@ -9,6 +8,7 @@ use chrono::{DateTime, Local};
 use eframe::egui::{self, Align, Button, Color32, FontId, Layout, RichText, TextEdit, Ui};
 use remote_desktop::{
     protocol::{Packet, ResultPacket},
+    secure_channel::SecureChannel,
     Scene, SceneChange,
 };
 
@@ -29,11 +29,11 @@ fn numeric_text_edit(ui: &mut Ui, value: &mut String) {
     }
 }
 
-fn receive_recordings(socket: &mut TcpStream) -> HashMap<i32, String> {
+fn receive_recordings(channel: &mut SecureChannel) -> HashMap<i32, String> {
     let mut recordings = HashMap::new();
 
     loop {
-        let packet = Packet::receive(socket).unwrap();
+        let packet = channel.receive().unwrap();
 
         match packet {
             Packet::None => break,
@@ -59,8 +59,8 @@ pub struct MenuScene {
 }
 
 impl MenuScene {
-    pub fn new(username: String, socket: &mut TcpStream) -> Self {
-        let recordings = receive_recordings(socket);
+    pub fn new(username: String, channel: &mut SecureChannel) -> Self {
+        let recordings = receive_recordings(channel);
 
         Self {
             session_code: String::new(),
@@ -72,40 +72,43 @@ impl MenuScene {
         }
     }
 
-    fn host_button(&self, socket: &mut TcpStream) -> SceneChange {
-        let host_packet = Packet::Host;
-        host_packet.send(socket).unwrap();
+    fn host_button(&self, channel: &mut SecureChannel) -> SceneChange {
+        channel.send(Packet::Host).unwrap();
 
-        let result = ResultPacket::receive(socket).unwrap();
+        let result = channel.receive().unwrap();
         let ResultPacket::Success(code) = result else {
             panic!("should be success");
         };
 
         SceneChange::To(Box::new(HostScene::new(
             code,
-            socket,
+            channel,
             self.username.to_string(),
         )))
     }
 
-    fn join_button(&mut self, session_code: u32, socket: &mut TcpStream) -> Result<String, String> {
+    fn join_button(
+        &mut self,
+        session_code: u32,
+        channel: &mut SecureChannel,
+    ) -> Result<String, String> {
         let join_message = Packet::Join {
             code: session_code,
             username: self.username.clone(),
         };
-        join_message.send(socket).unwrap();
+        channel.send(join_message).unwrap();
 
-        let result = ResultPacket::receive(socket).unwrap();
+        let result = channel.receive().unwrap();
         match result {
             ResultPacket::Failure(msg) => Err(msg),
             ResultPacket::Success(_) => {
-                let mut socket = socket.try_clone().unwrap();
+                let mut channel = channel.clone();
                 let (sender, receiver) = mpsc::channel();
                 self.join_receiver = Some(receiver);
                 self.is_disabled = true;
 
                 thread::spawn(move || {
-                    let result = ResultPacket::receive(&mut socket).unwrap();
+                    let result = channel.receive().unwrap();
 
                     match result {
                         ResultPacket::Failure(msg) => sender.send((false, msg)),
@@ -120,8 +123,8 @@ impl MenuScene {
 }
 
 impl Scene for MenuScene {
-    fn update(&mut self, ctx: &egui::Context, socket: &mut Option<TcpStream>) -> SceneChange {
-        let socket = socket.as_mut().unwrap();
+    fn update(&mut self, ctx: &egui::Context, channel: &mut Option<SecureChannel>) -> SceneChange {
+        let channel = channel.as_mut().unwrap();
         let mut result: SceneChange = SceneChange::None;
 
         if let Some(join_receiver) = &self.join_receiver {
@@ -130,8 +133,10 @@ impl Scene for MenuScene {
 
                 match join_result {
                     true => {
-                        result =
-                            SceneChange::To(Box::new(MainScene::new(socket, self.username.clone())))
+                        result = SceneChange::To(Box::new(MainScene::new(
+                            channel,
+                            self.username.clone(),
+                        )))
                     }
 
                     false => self.join_fail_message = msg,
@@ -161,8 +166,7 @@ impl Scene for MenuScene {
                         ))
                         .clicked()
                     {
-                        let signout_packet = Packet::SignOut;
-                        signout_packet.send(socket).unwrap();
+                        channel.send(Packet::SignOut).unwrap();
 
                         result = SceneChange::To(Box::new(LoginScene::new(None, true)));
                     }
@@ -191,10 +195,9 @@ impl Scene for MenuScene {
                 let recording_display_name = time.format("%B %-d, %Y | %T").to_string();
 
                 if ui.button(recording_display_name).clicked() {
-                    let packet = Packet::WatchRecording { id: *id };
-                    packet.send(socket).unwrap();
+                    channel.send(Packet::WatchRecording { id: *id }).unwrap();
 
-                    let result_packet = ResultPacket::receive(socket).unwrap();
+                    let result_packet = channel.receive().unwrap();
 
                     match result_packet {
                         ResultPacket::Failure(msg) => {
@@ -206,7 +209,7 @@ impl Scene for MenuScene {
                             result = SceneChange::To(Box::new(WatchScene::new(
                                 self.username.clone(),
                                 duration,
-                                socket,
+                                channel,
                             )));
                         }
                     }
@@ -234,7 +237,7 @@ impl Scene for MenuScene {
 
                 if join_button.clicked() {
                     match self.session_code.parse::<u32>() {
-                        Ok(session_code) => match self.join_button(session_code, socket) {
+                        Ok(session_code) => match self.join_button(session_code, channel) {
                             Ok(msg) => self.join_fail_message = msg,
                             Err(msg) => self.join_fail_message = msg,
                         },
@@ -264,7 +267,7 @@ impl Scene for MenuScene {
                 });
 
                 if host_button.clicked() {
-                    result = self.host_button(socket);
+                    result = self.host_button(channel);
                 }
             });
         });
@@ -272,17 +275,12 @@ impl Scene for MenuScene {
         result
     }
 
-    fn on_exit(&mut self, socket: &mut Option<TcpStream>) {
-        let socket = socket.as_mut().unwrap();
+    fn on_exit(&mut self, channel: &mut Option<SecureChannel>) {
+        let channel = channel.as_mut().unwrap();
 
-        let signout_packet = Packet::SignOut;
-        signout_packet.send(socket).unwrap();
+        channel.send(Packet::SignOut).unwrap();
+        channel.send(Packet::Shutdown).unwrap();
 
-        let shutdown_packet = Packet::Shutdown;
-        shutdown_packet.send(socket).unwrap();
-
-        socket
-            .shutdown(std::net::Shutdown::Both)
-            .expect("Could not close socket.");
+        channel.close();
     }
 }
