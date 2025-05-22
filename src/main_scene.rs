@@ -28,6 +28,9 @@ enum RightPanelType {
     Chat,
 }
 
+/// Starts the `ffmpeg` command to decode the received H.264 packets.
+///
+/// Returns the `ffmpeg` subprocess.
 fn start_ffmpeg() -> Child {
     let ffmpeg = Command::new("ffmpeg")
         .args([
@@ -54,6 +57,7 @@ fn start_ffmpeg() -> Child {
     ffmpeg
 }
 
+/// Starts a thread to receive packets from the socket.
 fn thread_receive_socket(
     mut channel: SecureChannel,
     mut stdin: ChildStdin,
@@ -130,6 +134,7 @@ fn thread_receive_socket(
     })
 }
 
+/// Starts a thread to read decoded frames from `ffmpeg` and push them to the frame queue.
 fn thread_read_decoded(
     frame_queue: Arc<Mutex<VecDeque<Vec<u8>>>>,
     mut stdout: ChildStdout,
@@ -150,6 +155,7 @@ fn thread_read_decoded(
     })
 }
 
+/// The main scene.
 pub struct MainScene {
     now: Instant,
     elapsed_time: f32,
@@ -175,6 +181,7 @@ pub struct MainScene {
 }
 
 impl MainScene {
+    /// Creates a new `MainScene` and starts the `receive_socket` thread and the `read_decoded` thread.
     pub fn new(channel: &mut SecureChannel, username: String) -> Self {
         let mut ffmpeg = start_ffmpeg();
         let stdin = ffmpeg.stdin.take().unwrap();
@@ -228,6 +235,7 @@ impl MainScene {
         }
     }
 
+    /// Sends `Control` packets corresponding to the input.
     fn handle_input(&mut self, input: &egui::InputState, channel: &mut SecureChannel) {
         self.modifiers_state.update(input);
 
@@ -303,6 +311,7 @@ impl MainScene {
         }
     }
 
+    /// Renders the main UI.
     fn central_panel_ui(&mut self, ui: &mut Ui, ctx: &egui::Context, channel: &mut SecureChannel) {
         let texture = egui::ColorImage::from_rgba_unmultiplied([1920, 1080], &self.current_frame);
         let handle = ctx.load_texture("screen", texture, egui::TextureOptions::default());
@@ -344,6 +353,9 @@ impl MainScene {
         }
     }
 
+    /// Handles disconnecting from the server.
+    ///
+    /// Returns a new scene to switch to.
     fn disconnect(&mut self, channel: &mut SecureChannel) -> SceneChange {
         channel.send(Packet::SessionExit).unwrap();
 

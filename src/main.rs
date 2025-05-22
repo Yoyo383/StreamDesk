@@ -14,6 +14,8 @@ mod menu_scene;
 mod modifiers_state;
 mod watch_scene;
 
+/// Starts a thread to connect to the server. When connected, sends the new `SecureChannel` to the sender.
+/// If it could not connect to the server, sends `None` to the sender.
 fn connect_to_server(sender: Sender<Option<SecureChannel>>) {
     thread::spawn(move || match TcpStream::connect("127.0.0.1:7643") {
         Ok(socket) => {
@@ -25,12 +27,14 @@ fn connect_to_server(sender: Sender<Option<SecureChannel>>) {
     });
 }
 
+/// The app struct. Has the `SecureChannel` and the current `Scene`.
 struct MyApp {
     channel: Option<SecureChannel>,
     scene: Box<dyn Scene>,
 }
 
 impl MyApp {
+    /// Creates a new app and starts connecting to the server.
     fn new() -> Self {
         let (sender, receiver) = mpsc::channel();
         connect_to_server(sender);
@@ -60,6 +64,7 @@ impl eframe::App for MyApp {
     }
 }
 
+/// The main function.
 fn main() {
     let (width, height): (f32, f32) = (600.0 * 1920.0 / 1080.0, 600.0);
     let options = NativeOptions {

@@ -21,6 +21,7 @@ pub struct SecureChannel {
     nonce_counter: Arc<AtomicU64>,
     rsa_private_key: Option<RsaPrivateKey>,
     cipher: Option<Aes256Gcm>,
+    is_server: bool,
 }
 
 impl Clone for SecureChannel {
@@ -30,6 +31,7 @@ impl Clone for SecureChannel {
             nonce_counter: self.nonce_counter.clone(),
             rsa_private_key: self.rsa_private_key.clone(),
             cipher: self.cipher.clone(),
+            is_server: self.is_server.clone(),
         }
     }
 }
@@ -44,6 +46,7 @@ impl SecureChannel {
             nonce_counter: Arc::new(AtomicU64::new(1)),
             rsa_private_key,
             cipher: None,
+            is_server: true,
         };
 
         server.send_rsa_key()?;
@@ -58,6 +61,7 @@ impl SecureChannel {
             nonce_counter: Arc::new(AtomicU64::new(1)),
             rsa_private_key: None,
             cipher: None,
+            is_server: false,
         };
 
         let rsa_public_key = client.receive_rsa_key()?;
@@ -134,7 +138,8 @@ impl SecureChannel {
     fn next_nonce(&mut self) -> [u8; 12] {
         let nonce = self.nonce_counter.fetch_add(1, Ordering::Relaxed);
 
-        let mut nonce_bytes = [0u8; 12];
+        // makes server and client have different nonces
+        let mut nonce_bytes = if self.is_server { [0u8; 12] } else { [1u8; 12] };
         nonce_bytes[4..].copy_from_slice(&nonce.to_be_bytes());
 
         nonce_bytes

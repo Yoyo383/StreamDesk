@@ -12,6 +12,7 @@ use secure_channel::SecureChannel;
 pub mod protocol;
 pub mod secure_channel;
 
+/// Maps an egui `Key` to a Windows virtual key code.
 pub fn egui_key_to_vk(key: &Key) -> Option<u16> {
     use winapi::um::winuser::*;
     use Key::*;
@@ -104,6 +105,7 @@ pub fn egui_key_to_vk(key: &Key) -> Option<u16> {
     })
 }
 
+/// Normalizes the mouse position to between 0 and 65,535.
 pub fn normalize_mouse_position(mouse_position: Pos2, image_rect: Rect) -> (u32, u32) {
     let x = (mouse_position.x - image_rect.left()) * 65535.0 / image_rect.width();
     let y = (mouse_position.y - image_rect.top()) * 65535.0 / image_rect.height();
@@ -268,16 +270,28 @@ pub fn chat_ui(
     });
 }
 
+/// Represents a scene change.
+///
+/// `None`: Don't change the scene.
+///
+/// `To(..)`: Change the scene.
 pub enum SceneChange {
     None,
     To(Box<dyn Scene>),
 }
 
+/// Base scene trait. Implemented on all scenes.
 pub trait Scene {
+    /// Updates the scene. This function is called every frame and it handles the logic and rendering of the scene.
+    ///
+    /// If returns `SceneChange::None`, the scene doesn't change. If returns `SceneChange::To(..)`, the scene changes.
     fn update(&mut self, ctx: &egui::Context, channel: &mut Option<SecureChannel>) -> SceneChange;
+
+    /// Called when the app is exited. Happens when the user clicks the X button to close the window.
     fn on_exit(&mut self, channel: &mut Option<SecureChannel>);
 }
 
+/// Represents the type of each user.
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum UserType {
