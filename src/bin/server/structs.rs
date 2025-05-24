@@ -38,20 +38,24 @@ impl Session {
         }
     }
 
-    pub fn broadcast_all(&mut self, packet: Packet) {
+    pub fn broadcast_all(&mut self, packet: Packet) -> std::io::Result<()> {
         for (_, connection) in &mut self.connections {
-            connection.channel.send(packet.clone()).unwrap();
+            connection.channel.send(packet.clone())?;
         }
+
+        Ok(())
     }
 
-    pub fn broadcast_participants(&mut self, packet: Packet) {
+    pub fn broadcast_participants(&mut self, packet: Packet) -> std::io::Result<()> {
         for (_, connection) in &mut self.connections {
             if connection.connection_type == ConnectionType::Participant
                 || connection.connection_type == ConnectionType::Controller
             {
-                connection.channel.send(packet.clone()).unwrap();
+                connection.channel.send(packet.clone())?;
             }
         }
+
+        Ok(())
     }
 
     pub fn host(&self) -> SecureChannel {

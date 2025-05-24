@@ -51,8 +51,8 @@ fn thread_send_screen(
     mut channel: SecureChannel,
     mut stdout: ChildStdout,
     stop_flag: Arc<AtomicBool>,
-) -> JoinHandle<()> {
-    thread::spawn(move || {
+) -> JoinHandle<std::io::Result<()>> {
+    thread::spawn(move || -> std::io::Result<()> {
         let mut reader = AnnexBReader::accumulate(|nal: RefNal<'_>| {
             if !nal.is_complete() {
                 return NalInterest::Buffer;
@@ -70,7 +70,7 @@ fn thread_send_screen(
                 .read_to_end(&mut nal_bytes)
                 .expect("should be able to read NAL");
 
-            channel.send(Packet::Screen { bytes: nal_bytes }).unwrap();
+            let _ = channel.send(Packet::Screen { bytes: nal_bytes });
 
             NalInterest::Ignore
         });
@@ -90,11 +90,13 @@ fn thread_send_screen(
             }
         }
 
-        channel.send(Packet::None).unwrap();
+        channel.send(Packet::None)?;
+
+        Ok(())
     })
 }
 
-pub fn handle_watching(channel: &mut SecureChannel, filename: &str) {
+pub fn handle_watching(channel: &mut SecureChannel, filename: &str) -> std::io::Result<()> {
     let mut ffmpeg = ffmpeg_send_recording(filename, 0);
     let mut stdout = ffmpeg.stdout.take().unwrap();
 
@@ -107,7 +109,7 @@ pub fn handle_watching(channel: &mut SecureChannel, filename: &str) {
     ));
 
     loop {
-        let packet = channel.receive().unwrap();
+        let packet = channel.receive().unwrap_or_default();
 
         match packet {
             Packet::SeekInit => {
@@ -117,7 +119,7 @@ pub fn handle_watching(channel: &mut SecureChannel, filename: &str) {
                 let _ = thread_send.take().unwrap().join();
 
                 // send session exit
-                channel.send(Packet::SessionExit).unwrap();
+                channel.send(Packet::SessionExit)?;
             }
 
             Packet::SeekTo { time_seconds } => {
@@ -132,13 +134,13 @@ pub fn handle_watching(channel: &mut SecureChannel, filename: &str) {
                 ));
             }
 
-            Packet::SessionExit => {
+            Packet::SessionExit | Packet::None => {
                 stop_flag.store(true, Ordering::Relaxed);
 
                 let _ = ffmpeg.kill();
                 let _ = thread_send.take().unwrap().join();
 
-                channel.send(Packet::SessionExit).unwrap();
+                channel.send(Packet::SessionExit)?;
 
                 break;
             }
@@ -146,4 +148,6 @@ pub fn handle_watching(channel: &mut SecureChannel, filename: &str) {
             _ => (),
         }
     }
+
+    Ok(())
 }

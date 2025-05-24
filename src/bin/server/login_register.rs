@@ -13,9 +13,9 @@ pub fn login_or_register(
     channel: &mut SecureChannel,
     conn: &rusqlite::Connection,
     logged_in_users: Arc<Mutex<HashSet<String>>>,
-) -> Option<(String, i32)> {
+) -> std::io::Result<Option<(String, i32)>> {
     match packet {
-        Packet::Shutdown => None,
+        Packet::Shutdown => Ok(None),
 
         Packet::Login { username, password } => {
             let user_id_result: Result<i32, rusqlite::Error> = conn.query_row(
@@ -30,26 +30,26 @@ pub fn login_or_register(
                         logged_in_users.lock().unwrap().insert(username.clone());
 
                         let result = ResultPacket::Success("Signing in".to_owned());
-                        channel.send(result).unwrap();
+                        channel.send(result)?;
 
-                        Some((username, user_id))
+                        Ok(Some((username, user_id)))
                     } else {
                         let result =
                             ResultPacket::Failure("User already logged in elsewhere.".to_owned());
-                        channel.send(result).unwrap();
-                        None
+                        channel.send(result)?;
+                        Ok(None)
                     }
                 }
                 Err(rusqlite::Error::QueryReturnedNoRows) => {
                     let result =
                         ResultPacket::Failure("Username or password are incorrect.".to_owned());
-                    channel.send(result).unwrap();
-                    None
+                    channel.send(result)?;
+                    Ok(None)
                 }
                 _ => {
                     let result = ResultPacket::Failure("Error signing in.".to_owned());
-                    channel.send(result).unwrap();
-                    None
+                    channel.send(result)?;
+                    Ok(None)
                 }
             }
         }
@@ -58,18 +58,18 @@ pub fn login_or_register(
             // validate credentials
             if username.is_empty() {
                 let result = ResultPacket::Failure("Username cannot be empty.".to_string());
-                channel.send(result).unwrap();
+                channel.send(result)?;
 
-                return None;
+                return Ok(None);
             }
 
             if username.chars().any(|c| !c.is_ascii_alphanumeric()) {
                 let result = ResultPacket::Failure(
                     "Username can only contain English letters and numbers.".to_string(),
                 );
-                channel.send(result).unwrap();
+                channel.send(result)?;
 
-                return None;
+                return Ok(None);
             }
 
             let inserted = conn.execute(
@@ -82,25 +82,25 @@ pub fn login_or_register(
                     logged_in_users.lock().unwrap().insert(username.clone());
 
                     let result = ResultPacket::Success("Signing in".to_owned());
-                    channel.send(result).unwrap();
+                    channel.send(result)?;
 
                     let user_id = conn.last_insert_rowid() as i32;
 
-                    Some((username, user_id))
+                    Ok(Some((username, user_id)))
                 }
                 Err(SqliteFailure(e, _)) if e.extended_code == SQLITE_CONSTRAINT_UNIQUE => {
                     let result = ResultPacket::Failure("Username already taken.".to_owned());
-                    channel.send(result).unwrap();
-                    None
+                    channel.send(result)?;
+                    Ok(None)
                 }
                 _ => {
                     let result = ResultPacket::Failure("Error signing up.".to_owned());
-                    channel.send(result).unwrap();
-                    None
+                    channel.send(result)?;
+                    Ok(None)
                 }
             }
         }
 
-        _ => None,
+        _ => Ok(None),
     }
 }

@@ -2,9 +2,13 @@ use remote_desktop::{protocol::Packet, secure_channel::SecureChannel, UserType};
 
 use crate::{structs::*, SharedSession};
 
-pub fn handle_participant(channel: &mut SecureChannel, session: SharedSession, username: String) {
+pub fn handle_participant(
+    channel: &mut SecureChannel,
+    session: SharedSession,
+    username: String,
+) -> std::io::Result<()> {
     loop {
-        let packet = channel.receive().unwrap();
+        let packet = channel.receive().unwrap_or_default();
 
         match packet {
             Packet::Control { .. } => {
@@ -13,7 +17,7 @@ pub fn handle_participant(channel: &mut SecureChannel, session: SharedSession, u
                 if session.connections.get(&username).unwrap().connection_type
                     == ConnectionType::Controller
                 {
-                    session.host().send(packet).unwrap();
+                    session.host().send(packet)?;
                 }
             }
 
@@ -24,17 +28,17 @@ pub fn handle_participant(channel: &mut SecureChannel, session: SharedSession, u
                 if session.connections.get(&username).unwrap().connection_type
                     == ConnectionType::Participant
                 {
-                    session.host().send(packet).unwrap();
+                    session.host().send(packet)?;
                 } else {
                     // send DenyRequest because not participant
                     let deny_packet = Packet::DenyControl {
                         username: username.clone(),
                     };
-                    channel.send(deny_packet).unwrap();
+                    channel.send(deny_packet)?;
                 }
             }
 
-            Packet::SessionExit => {
+            Packet::SessionExit | Packet::None => {
                 let mut session = session.lock().unwrap();
                 session.connections.remove(&username);
 
@@ -43,9 +47,9 @@ pub fn handle_participant(channel: &mut SecureChannel, session: SharedSession, u
                     joined_before: false,
                     username: username.clone(),
                 };
-                session.broadcast_all(user_update_packet);
+                session.broadcast_all(user_update_packet)?;
 
-                channel.send(Packet::SessionExit).unwrap();
+                channel.send(Packet::SessionExit)?;
 
                 break;
             }
@@ -55,7 +59,7 @@ pub fn handle_participant(channel: &mut SecureChannel, session: SharedSession, u
                 let packet = Packet::Chat { message };
 
                 let mut session = session.lock().unwrap();
-                session.broadcast_all(packet);
+                session.broadcast_all(packet)?;
             }
 
             Packet::SessionEnd => break,
@@ -63,4 +67,6 @@ pub fn handle_participant(channel: &mut SecureChannel, session: SharedSession, u
             _ => (),
         }
     }
+
+    Ok(())
 }

@@ -54,7 +54,7 @@ pub fn handle_host(
     username: String,
     user_id: i32,
     conn: &rusqlite::Connection,
-) {
+) -> std::io::Result<()> {
     let time = Local::now().to_rfc3339();
     let filename = uuid::Uuid::new_v4().to_string();
 
@@ -62,7 +62,7 @@ pub fn handle_host(
     let mut stdin = ffmpeg.stdin.take().unwrap();
 
     loop {
-        let packet = channel.receive().unwrap();
+        let packet = channel.receive().unwrap_or_default();
 
         match packet {
             Packet::Join { username, .. } => {
@@ -71,7 +71,7 @@ pub fn handle_host(
                 if let Some(mut connection) = session.pending_join.remove(&username) {
                     // notify user they were allowed
                     let success = ResultPacket::Success("Joining".to_string());
-                    connection.channel.send(success).unwrap();
+                    connection.channel.send(success)?;
 
                     // notify user thread
                     let _ = connection.join_request_sender.take().unwrap().send(true);
@@ -83,7 +83,7 @@ pub fn handle_host(
                             joined_before: true,
                             username: username.clone(),
                         };
-                        connection.channel.send(username_packet).unwrap();
+                        connection.channel.send(username_packet)?;
                     }
 
                     session.connections.insert(username.clone(), connection);
@@ -94,7 +94,7 @@ pub fn handle_host(
                         joined_before: false,
                         username: username.clone(),
                     };
-                    session.broadcast_all(packet);
+                    session.broadcast_all(packet)?;
                 }
             }
 
@@ -104,7 +104,7 @@ pub fn handle_host(
                 if let Some(connection) = session.pending_join.get_mut(&username) {
                     // notify user they were denied
                     let failure = ResultPacket::Failure("You were denied by the host.".to_string());
-                    connection.channel.send(failure).unwrap();
+                    connection.channel.send(failure)?;
 
                     // notify user thread
                     let _ = connection.join_request_sender.take().unwrap().send(false);
@@ -117,7 +117,7 @@ pub fn handle_host(
             Packet::Screen { ref bytes } => {
                 stdin.write_all(&bytes).unwrap();
                 let mut session = session.lock().unwrap();
-                session.broadcast_participants(packet);
+                session.broadcast_participants(packet)?;
             }
 
             Packet::MergeUnready => {
@@ -130,11 +130,11 @@ pub fn handle_host(
                 }
             }
 
-            Packet::SessionExit => {
+            Packet::SessionExit | Packet::None => {
                 let mut session = session.lock().unwrap();
 
                 let packet = Packet::SessionEnd;
-                session.broadcast_all(packet);
+                session.broadcast_all(packet)?;
 
                 let mut sessions = sessions.lock().unwrap();
                 sessions.remove(&code);
@@ -150,7 +150,7 @@ pub fn handle_host(
                     let packet = Packet::RequestControl {
                         username: username.clone(),
                     };
-                    user_connection.channel.send(packet).unwrap();
+                    user_connection.channel.send(packet)?;
 
                     // notify all users
                     let user_update = Packet::UserUpdate {
@@ -158,7 +158,7 @@ pub fn handle_host(
                         joined_before: false,
                         username: username.to_string(),
                     };
-                    session.broadcast_all(user_update);
+                    session.broadcast_all(user_update)?;
                 }
             }
 
@@ -174,7 +174,7 @@ pub fn handle_host(
                     let packet = Packet::DenyControl {
                         username: username.clone(),
                     };
-                    user_connection.channel.send(packet).unwrap();
+                    user_connection.channel.send(packet)?;
 
                     // if the user is a controller notify all users
                     if was_controller {
@@ -183,7 +183,7 @@ pub fn handle_host(
                             joined_before: false,
                             username: username.to_string(),
                         };
-                        session.broadcast_all(user_update);
+                        session.broadcast_all(user_update)?;
                     }
                 }
             }
@@ -193,7 +193,7 @@ pub fn handle_host(
                 let packet = Packet::Chat { message };
 
                 let mut session = session.lock().unwrap();
-                session.broadcast_all(packet);
+                session.broadcast_all(packet)?;
             }
 
             _ => (),
@@ -204,4 +204,6 @@ pub fn handle_host(
     let _ = ffmpeg.wait();
 
     insert_recording_to_database(conn, &filename, &time, user_id);
+
+    Ok(())
 }
