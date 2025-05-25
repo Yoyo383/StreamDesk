@@ -510,6 +510,22 @@ impl Scene for HostScene {
             }
         });
 
+        let input = ctx.input(|i| i.clone());
+
+        if input.key_pressed(egui::Key::R) && input.modifiers.command && input.modifiers.shift {
+            let usernames = self.usernames.lock().unwrap();
+            let controller = usernames
+                .iter()
+                .find(|(_, user_type)| **user_type == UserType::Controller);
+
+            if let Some((controller, _)) = controller {
+                let deny_packet = Packet::DenyControl {
+                    username: controller.to_string(),
+                };
+                channel.send(deny_packet).unwrap();
+            }
+        }
+
         result
     }
 

@@ -159,7 +159,7 @@ pub fn users_list(
                 }
 
                 if is_host {
-                    if ui.button("Revoke Control").clicked() {
+                    if ui.button("Revoke Control (Ctrl+Shift+R)").clicked() {
                         result = Some(controller.clone());
                     }
                 }
