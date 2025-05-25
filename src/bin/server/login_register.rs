@@ -3,16 +3,11 @@ use remote_desktop::{
     secure_channel::SecureChannel,
 };
 use rusqlite::{ffi::SQLITE_CONSTRAINT_UNIQUE, params, Error::SqliteFailure};
-use std::{
-    collections::HashSet,
-    sync::{Arc, Mutex},
-};
 
 pub fn login_or_register(
     packet: Packet,
     channel: &mut SecureChannel,
     conn: &rusqlite::Connection,
-    logged_in_users: Arc<Mutex<HashSet<String>>>,
 ) -> std::io::Result<Option<(String, i32)>> {
     match packet {
         Packet::Shutdown => Ok(None),
@@ -26,19 +21,10 @@ pub fn login_or_register(
 
             match user_id_result {
                 Ok(user_id) => {
-                    if !logged_in_users.lock().unwrap().contains(&username) {
-                        logged_in_users.lock().unwrap().insert(username.clone());
+                    let result = ResultPacket::Success("Signing in".to_owned());
+                    channel.send(result)?;
 
-                        let result = ResultPacket::Success("Signing in".to_owned());
-                        channel.send(result)?;
-
-                        Ok(Some((username, user_id)))
-                    } else {
-                        let result =
-                            ResultPacket::Failure("User already logged in elsewhere.".to_owned());
-                        channel.send(result)?;
-                        Ok(None)
-                    }
+                    Ok(Some((username, user_id)))
                 }
                 Err(rusqlite::Error::QueryReturnedNoRows) => {
                     let result =
@@ -79,8 +65,6 @@ pub fn login_or_register(
 
             match inserted {
                 Ok(_) => {
-                    logged_in_users.lock().unwrap().insert(username.clone());
-
                     let result = ResultPacket::Success("Signing in".to_owned());
                     channel.send(result)?;
 

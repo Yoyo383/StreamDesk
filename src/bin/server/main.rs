@@ -8,7 +8,7 @@ use remote_desktop::{
     UserType,
 };
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     net::TcpListener,
     path::PathBuf,
     process::Command,
@@ -93,11 +93,7 @@ fn query_recordings(conn: &rusqlite::Connection, user_id: i32) -> HashMap<i32, R
     recordings
 }
 
-fn handle_client(
-    mut channel: SecureChannel,
-    sessions: SessionHashMap,
-    logged_in_users: Arc<Mutex<HashSet<String>>>,
-) -> std::io::Result<()> {
+fn handle_client(mut channel: SecureChannel, sessions: SessionHashMap) -> std::io::Result<()> {
     let conn = rusqlite::Connection::open(DATABASE_FILE).unwrap();
     let mut username: String;
     let mut user_id: i32;
@@ -111,7 +107,7 @@ fn handle_client(
                 return Ok(());
             }
 
-            let result = login_or_register(packet, &mut channel, &conn, logged_in_users.clone())?;
+            let result = login_or_register(packet, &mut channel, &conn)?;
             if let Some((user, id)) = result {
                 username = user;
                 user_id = id;
@@ -137,11 +133,7 @@ fn handle_client(
                 let packet = channel.receive()?;
 
                 match packet {
-                    Packet::SignOut => {
-                        logged_in_users.lock().unwrap().remove(&username);
-
-                        break 'menu_scene;
-                    }
+                    Packet::SignOut => break 'menu_scene,
 
                     Packet::Host => {
                         let mut sessions_guard = sessions.lock().unwrap();
@@ -187,6 +179,15 @@ fn handle_client(
                             drop(sessions);
 
                             let mut session_guard = session.lock().unwrap();
+
+                            if session_guard.connections.contains_key(&username) {
+                                let failure = ResultPacket::Failure(
+                                    "You are already connected to this session from elsewhere."
+                                        .to_string(),
+                                );
+                                channel.send(failure)?;
+                                continue;
+                            }
 
                             let success = ResultPacket::Success("Joining".to_owned());
                             channel.send(success)?;
@@ -288,19 +289,15 @@ fn main() {
     let listener = TcpListener::bind("0.0.0.0:7643").expect("Could not bind listener");
 
     let sessions: SessionHashMap = Arc::new(Mutex::new(HashMap::new()));
-    let logged_in_users = Arc::new(Mutex::new(HashSet::<String>::new()));
 
     for connection in listener.incoming() {
         match connection {
             Ok(socket) => {
                 let sessions_clone = sessions.clone();
-                let logged_in_users_clone = logged_in_users.clone();
 
                 let mut channel = SecureChannel::new_server(socket).unwrap();
                 thread::spawn(move || {
-                    if let Err(_) =
-                        handle_client(channel.clone(), sessions_clone, logged_in_users_clone)
-                    {
+                    if let Err(_) = handle_client(channel.clone(), sessions_clone) {
                         channel.close();
                     }
                 });
