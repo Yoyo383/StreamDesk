@@ -50,6 +50,11 @@ impl LoginScene {
     }
 
     fn login(&mut self, channel: &mut SecureChannel) -> SceneChange {
+        if self.login_username.len() > 20 {
+            self.error_message_login = "Username cannot be longer than 20 characters.".to_string();
+            return SceneChange::None;
+        }
+
         let password = format!("{:x}", md5::compute(self.login_password.clone()));
 
         let login_packet = Packet::Login {

@@ -13,6 +13,15 @@ pub fn login_or_register(
         Packet::Shutdown => Ok(None),
 
         Packet::Login { username, password } => {
+            if username.len() > 20 {
+                let result = ResultPacket::Failure(
+                    "Username cannot be longer than 20 characters.".to_string(),
+                );
+                channel.send(result)?;
+
+                return Ok(None);
+            }
+
             let user_id_result: Result<i32, rusqlite::Error> = conn.query_row(
                 "SELECT user_id FROM users WHERE username = ?1 AND password = ?2",
                 params![username, password],
