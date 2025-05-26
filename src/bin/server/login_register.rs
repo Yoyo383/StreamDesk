@@ -58,6 +58,15 @@ pub fn login_or_register(
                 return Ok(None);
             }
 
+            if username.len() > 20 {
+                let result = ResultPacket::Failure(
+                    "Username cannot be longer than 20 characters.".to_string(),
+                );
+                channel.send(result)?;
+
+                return Ok(None);
+            }
+
             let inserted = conn.execute(
                 "INSERT INTO users (username, password) VALUES (?1, ?2)",
                 params![username, password],

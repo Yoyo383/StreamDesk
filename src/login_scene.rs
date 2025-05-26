@@ -96,6 +96,12 @@ impl LoginScene {
             return SceneChange::None;
         }
 
+        if self.register_username.len() > 20 {
+            self.error_message_register =
+                "Username cannot be longer than 20 characters.".to_string();
+            return SceneChange::None;
+        }
+
         if self.register_password.is_empty() {
             self.error_message_register = "Password cannot be empty.".to_string();
             return SceneChange::None;
