@@ -1,12 +1,14 @@
+use crate::UserType;
+use eframe::egui::PointerButton;
 use std::collections::VecDeque;
 
-use eframe::egui::PointerButton;
-
-use crate::UserType;
-
 pub trait ProtocolMessage {
+    /// Turns a `ProtocolMessage` into bytes that can be sent over a socket.
     fn to_bytes(&self) -> Vec<u8>;
 
+    /// Turns an array of bytes into a `ProtocolMessage`.
+    ///
+    /// Returns `None` if the bytes are invalid for this type of `ProtocolMessage`.
     fn from_bytes(bytes: Vec<u8>) -> Option<Self>
     where
         Self: Sized;
@@ -45,7 +47,6 @@ pub enum ResultPacket {
 }
 
 impl ProtocolMessage for ResultPacket {
-    /// Turns a `ResultPacket` into bytes that can be sent over a socket.
     fn to_bytes(&self) -> Vec<u8> {
         match self {
             ResultPacket::Failure(msg) => {

@@ -16,19 +16,6 @@ use crate::{
     host_scene::HostScene, login_scene::LoginScene, main_scene::MainScene, watch_scene::WatchScene,
 };
 
-fn numeric_text_edit(ui: &mut Ui, value: &mut String) {
-    let response = ui.add(
-        TextEdit::singleline(value)
-            .hint_text("Enter code")
-            .char_limit(6)
-            .font(FontId::monospace(30.)),
-    );
-
-    if response.changed() {
-        *value = value.to_uppercase();
-    }
-}
-
 fn receive_recordings(channel: &mut SecureChannel) -> Vec<(i32, String)> {
     let mut recordings = HashMap::new();
 
@@ -189,7 +176,7 @@ impl Scene for MenuScene {
                 ui.add_space(10.0);
             });
 
-        egui::SidePanel::right("join_panel").show(ctx, |ui| {
+        egui::SidePanel::right("recordings_panel").show(ctx, |ui| {
             if self.is_disabled {
                 ui.disable();
             }
@@ -235,14 +222,25 @@ impl Scene for MenuScene {
 
             ui.vertical_centered(|ui| {
                 ui.add_space(10.0);
-                ui.label(RichText::new("Join Session").size(20.0));
+                ui.label(RichText::new("Join Session (6 digit code)").size(20.0));
                 ui.add_space(10.0);
 
-                numeric_text_edit(ui, &mut self.session_code);
+                ui.add(
+                    TextEdit::singleline(&mut self.session_code)
+                        .hint_text("Enter code")
+                        .char_limit(6)
+                        .font(FontId::monospace(30.)),
+                );
 
                 ui.add_space(10.0);
 
-                let join_button = ui.add(|ui: &mut Ui| {
+                let code = self.session_code.parse::<u32>();
+                let can_join = match code {
+                    Ok(code) => code > 100_000 && code < 1_000_000,
+                    Err(_) => false,
+                };
+
+                let join_button = ui.add_enabled(can_join, |ui: &mut Ui| {
                     ui.add_sized([100.0, 40.0], Button::new(RichText::new("Join").size(20.0)))
                 });
 
