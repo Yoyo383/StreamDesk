@@ -302,31 +302,6 @@ fn main() {
         )
         .unwrap();
 
-    // let conn = rusqlite::Connection::open(DATABASE_FILE).unwrap();
-    // conn.execute(
-    //     "CREATE TABLE IF NOT EXISTS users(
-    //         user_id INTEGER PRIMARY KEY,
-    //         username TEXT NOT NULL UNIQUE,
-    //         password TEXT NOT NULL
-    //     )
-    //     ",
-    //     [],
-    // )
-    // .unwrap();
-
-    // conn.execute(
-    //     "CREATE TABLE IF NOT EXISTS recordings(
-    //         recording_id INTEGER PRIMARY KEY,
-    //         filename TEXT NOT NULL,
-    //         time TEXT NOT NULL,
-    //         user_id INTEGER,
-    //         FOREIGN KEY (user_id) REFERENCES users(user_id)
-    //     )
-    //     ",
-    //     [],
-    // )
-    // .unwrap();
-
     let listener = TcpListener::bind("0.0.0.0:7643").expect("Could not bind listener");
 
     let sessions: SessionHashMap = Arc::new(Mutex::new(HashMap::new()));
