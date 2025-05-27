@@ -35,6 +35,10 @@ const DATABASE_FILE: &'static str = "database.sqlite";
 type SharedSession = Arc<Mutex<Session>>;
 type SessionHashMap = Arc<Mutex<HashMap<u32, SharedSession>>>;
 
+fn get_video_path(filename: &str) -> PathBuf {
+    PathBuf::from(RECORDINGS_FOLDER).join(format!("{filename}.mp4"))
+}
+
 fn generate_session_code(sessions: &HashMap<u32, SharedSession>) -> u32 {
     let mut rng = rand::rng();
     loop {
@@ -47,7 +51,7 @@ fn generate_session_code(sessions: &HashMap<u32, SharedSession>) -> u32 {
 }
 
 fn get_duration_frames(filename: &str) -> i32 {
-    let input_path = PathBuf::from(RECORDINGS_FOLDER).join(format!("{filename}.mp4"));
+    let input_path = get_video_path(filename);
 
     let output = Command::new("ffprobe")
         .args([
@@ -246,12 +250,22 @@ fn handle_client(
                         let recording = recordings.get(&id);
                         match recording {
                             Some(recording) => {
-                                let num_of_frames = get_duration_frames(&recording.filename);
-                                let success = ResultPacket::Success(num_of_frames.to_string());
-                                channel.send(success)?;
+                                let does_video_exists =
+                                    get_video_path(&recording.filename).exists();
 
-                                handle_watching(&mut channel, &recording.filename)?;
-                                break;
+                                if does_video_exists {
+                                    let num_of_frames = get_duration_frames(&recording.filename);
+                                    let success = ResultPacket::Success(num_of_frames.to_string());
+                                    channel.send(success)?;
+
+                                    handle_watching(&mut channel, &recording.filename)?;
+                                    break;
+                                } else {
+                                    let failure = ResultPacket::Failure(
+                                        "Video file does not exist on the server.".to_owned(),
+                                    );
+                                    channel.send(failure)?;
+                                }
                             }
                             None => {
                                 let failure =

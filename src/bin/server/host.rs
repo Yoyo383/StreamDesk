@@ -1,4 +1,4 @@
-use crate::{structs::*, SessionHashMap, SharedSession, RECORDINGS_FOLDER};
+use crate::{get_video_path, structs::*, SessionHashMap, SharedSession};
 use chrono::Local;
 
 use r2d2::Pool;
@@ -11,12 +11,11 @@ use remote_desktop::{
 use rusqlite::params;
 use std::{
     io::Write,
-    path::PathBuf,
     process::{Child, Command, Stdio},
 };
 
 fn ffmpeg_save_recording(filename: &str) -> Child {
-    let output_path = PathBuf::from(RECORDINGS_FOLDER).join(format!("{filename}.mp4"));
+    let output_path = get_video_path(filename);
 
     let ffmpeg = Command::new("ffmpeg")
         .args([
