@@ -1,6 +1,8 @@
 use crate::{structs::*, SessionHashMap, SharedSession, RECORDINGS_FOLDER};
 use chrono::Local;
 
+use r2d2::Pool;
+use r2d2_sqlite::SqliteConnectionManager;
 use remote_desktop::{
     protocol::{Packet, ResultPacket},
     secure_channel::SecureChannel,
@@ -35,12 +37,12 @@ fn ffmpeg_save_recording(filename: &str) -> Child {
 }
 
 fn insert_recording_to_database(
-    conn: &rusqlite::Connection,
+    db_pool: &Pool<SqliteConnectionManager>,
     filename: &str,
     time: &str,
     user_id: i32,
 ) {
-    let _ = conn.execute(
+    let _ = db_pool.get().unwrap().execute(
         "INSERT INTO recordings (filename, time, user_id) VALUES (?1, ?2, ?3)",
         params![filename, time, user_id],
     );
@@ -53,7 +55,7 @@ pub fn handle_host(
     code: u32,
     username: String,
     user_id: i32,
-    conn: &rusqlite::Connection,
+    db_pool: &Pool<SqliteConnectionManager>,
 ) -> std::io::Result<()> {
     let time = Local::now().to_rfc3339();
     let filename = uuid::Uuid::new_v4().to_string();
@@ -203,7 +205,7 @@ pub fn handle_host(
     drop(stdin);
     let _ = ffmpeg.wait();
 
-    insert_recording_to_database(conn, &filename, &time, user_id);
+    insert_recording_to_database(db_pool, &filename, &time, user_id);
 
     Ok(())
 }

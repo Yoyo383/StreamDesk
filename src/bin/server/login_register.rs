@@ -1,3 +1,5 @@
+use r2d2::Pool;
+use r2d2_sqlite::SqliteConnectionManager;
 use remote_desktop::{
     protocol::{Packet, ResultPacket},
     secure_channel::SecureChannel,
@@ -7,7 +9,7 @@ use rusqlite::{ffi::SQLITE_CONSTRAINT_UNIQUE, params, Error::SqliteFailure};
 pub fn login_or_register(
     packet: Packet,
     channel: &mut SecureChannel,
-    conn: &rusqlite::Connection,
+    db_pool: &Pool<SqliteConnectionManager>,
 ) -> std::io::Result<Option<(String, i32)>> {
     match packet {
         Packet::Shutdown => Ok(None),
@@ -22,7 +24,7 @@ pub fn login_or_register(
                 return Ok(None);
             }
 
-            let user_id_result: Result<i32, rusqlite::Error> = conn.query_row(
+            let user_id_result: Result<i32, rusqlite::Error> = db_pool.get().unwrap().query_row(
                 "SELECT user_id FROM users WHERE username = ?1 AND password = ?2",
                 params![username, password],
                 |row| row.get(0),
@@ -76,7 +78,7 @@ pub fn login_or_register(
                 return Ok(None);
             }
 
-            let inserted = conn.execute(
+            let inserted = db_pool.get().unwrap().execute(
                 "INSERT INTO users (username, password) VALUES (?1, ?2)",
                 params![username, password],
             );
@@ -86,7 +88,7 @@ pub fn login_or_register(
                     let result = ResultPacket::Success("Signing in".to_owned());
                     channel.send(result)?;
 
-                    let user_id = conn.last_insert_rowid() as i32;
+                    let user_id = db_pool.get().unwrap().last_insert_rowid() as i32;
 
                     Ok(Some((username, user_id)))
                 }

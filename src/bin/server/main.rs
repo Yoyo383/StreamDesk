@@ -1,6 +1,8 @@
 use host::handle_host;
 use login_register::login_or_register;
 use participant::handle_participant;
+use r2d2::Pool;
+use r2d2_sqlite::SqliteConnectionManager;
 use rand::Rng;
 use remote_desktop::{
     protocol::{Packet, ResultPacket},
@@ -71,8 +73,13 @@ fn get_duration_frames(filename: &str) -> i32 {
     (seconds * 30.0).ceil() as i32
 }
 
-fn query_recordings(conn: &rusqlite::Connection, user_id: i32) -> HashMap<i32, Recording> {
-    let mut query = conn
+fn query_recordings(
+    db_pool: &Pool<SqliteConnectionManager>,
+    user_id: i32,
+) -> HashMap<i32, Recording> {
+    let db_pool = db_pool.get().unwrap();
+
+    let mut query = db_pool
         .prepare("SELECT recording_id, filename, time FROM recordings WHERE user_id = ?1")
         .unwrap();
 
@@ -93,8 +100,11 @@ fn query_recordings(conn: &rusqlite::Connection, user_id: i32) -> HashMap<i32, R
     recordings
 }
 
-fn handle_client(mut channel: SecureChannel, sessions: SessionHashMap) -> std::io::Result<()> {
-    let conn = rusqlite::Connection::open(DATABASE_FILE).unwrap();
+fn handle_client(
+    mut channel: SecureChannel,
+    sessions: SessionHashMap,
+    db_pool: Arc<Pool<SqliteConnectionManager>>,
+) -> std::io::Result<()> {
     let mut username: String;
     let mut user_id: i32;
 
@@ -107,7 +117,7 @@ fn handle_client(mut channel: SecureChannel, sessions: SessionHashMap) -> std::i
                 return Ok(());
             }
 
-            let result = login_or_register(packet, &mut channel, &conn)?;
+            let result = login_or_register(packet, &mut channel, &db_pool)?;
             if let Some((user, id)) = result {
                 username = user;
                 user_id = id;
@@ -118,7 +128,7 @@ fn handle_client(mut channel: SecureChannel, sessions: SessionHashMap) -> std::i
 
         'menu_scene: loop {
             // send all recordings
-            let recordings = query_recordings(&conn, user_id);
+            let recordings = query_recordings(&db_pool, user_id);
             for (id, recording) in &recordings {
                 let packet = Packet::RecordingName {
                     id: *id,
@@ -163,7 +173,7 @@ fn handle_client(mut channel: SecureChannel, sessions: SessionHashMap) -> std::i
                             code,
                             username.clone(),
                             user_id,
-                            &conn,
+                            &db_pool,
                         )?;
 
                         break;
@@ -261,30 +271,61 @@ fn handle_client(mut channel: SecureChannel, sessions: SessionHashMap) -> std::i
 fn main() {
     let _ = std::fs::create_dir(RECORDINGS_FOLDER);
 
-    let conn = rusqlite::Connection::open(DATABASE_FILE).unwrap();
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS users(
-            user_id INTEGER PRIMARY KEY,
-            username TEXT NOT NULL UNIQUE,
-            password TEXT NOT NULL
-        )
-        ",
-        [],
-    )
-    .unwrap();
+    let db_manager = SqliteConnectionManager::file(DATABASE_FILE);
+    let db_pool = Arc::new(r2d2::Pool::new(db_manager).unwrap());
 
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS recordings(
-            recording_id INTEGER PRIMARY KEY,
-            filename TEXT NOT NULL,
-            time TEXT NOT NULL,
-            user_id INTEGER,
-            FOREIGN KEY (user_id) REFERENCES users(user_id)
+    db_pool
+        .get()
+        .unwrap()
+        .execute(
+            "CREATE TABLE IF NOT EXISTS users(
+                user_id INTEGER PRIMARY KEY,
+                username TEXT NOT NULL UNIQUE,
+                password TEXT NOT NULL
+            )",
+            [],
         )
-        ",
-        [],
-    )
-    .unwrap();
+        .unwrap();
+
+    db_pool
+        .get()
+        .unwrap()
+        .execute(
+            "CREATE TABLE IF NOT EXISTS recordings(
+                recording_id INTEGER PRIMARY KEY,
+                filename TEXT NOT NULL,
+                time TEXT NOT NULL,
+                user_id INTEGER,
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
+            )",
+            [],
+        )
+        .unwrap();
+
+    // let conn = rusqlite::Connection::open(DATABASE_FILE).unwrap();
+    // conn.execute(
+    //     "CREATE TABLE IF NOT EXISTS users(
+    //         user_id INTEGER PRIMARY KEY,
+    //         username TEXT NOT NULL UNIQUE,
+    //         password TEXT NOT NULL
+    //     )
+    //     ",
+    //     [],
+    // )
+    // .unwrap();
+
+    // conn.execute(
+    //     "CREATE TABLE IF NOT EXISTS recordings(
+    //         recording_id INTEGER PRIMARY KEY,
+    //         filename TEXT NOT NULL,
+    //         time TEXT NOT NULL,
+    //         user_id INTEGER,
+    //         FOREIGN KEY (user_id) REFERENCES users(user_id)
+    //     )
+    //     ",
+    //     [],
+    // )
+    // .unwrap();
 
     let listener = TcpListener::bind("0.0.0.0:7643").expect("Could not bind listener");
 
@@ -294,10 +335,11 @@ fn main() {
         match connection {
             Ok(socket) => {
                 let sessions_clone = sessions.clone();
+                let db_pool_clone = db_pool.clone();
 
                 let mut channel = SecureChannel::new_server(socket).unwrap();
                 thread::spawn(move || {
-                    if let Err(_) = handle_client(channel.clone(), sessions_clone) {
+                    if let Err(_) = handle_client(channel.clone(), sessions_clone, db_pool_clone) {
                         channel.close();
                     }
                 });

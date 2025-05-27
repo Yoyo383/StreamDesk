@@ -19,6 +19,8 @@ chrono = "0.4.41"
 uuid = { version = "1.16", features = ["v4"] }
 rsa = "0.9.8"
 aes-gcm = "0.10.3"
+r2d2_sqlite = "0.28.0"
+r2d2 = "0.8.10"
 
 [patch.crates-io]
 egui = { git = "https://github.com/Yoyo383/egui", branch = "master" }
