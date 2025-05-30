@@ -155,7 +155,6 @@ fn handle_client(
 
                         let host_connection = Connection {
                             channel: channel.clone(),
-                            connection_type: ConnectionType::Host,
                             user_type: UserType::Host,
                             join_request_sender: None,
                         };
@@ -217,7 +216,6 @@ fn handle_client(
 
                             let connection = Connection {
                                 channel: channel.clone(),
-                                connection_type: ConnectionType::Unready,
                                 user_type: UserType::Participant,
                                 join_request_sender: Some(sender),
                             };

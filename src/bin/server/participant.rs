@@ -1,6 +1,6 @@
 use remote_desktop::{protocol::Packet, secure_channel::SecureChannel, UserType};
 
-use crate::{structs::*, SharedSession};
+use crate::SharedSession;
 
 pub fn handle_participant(
     channel: &mut SecureChannel,
@@ -14,9 +14,7 @@ pub fn handle_participant(
             Packet::Control { .. } => {
                 let session = session.lock().unwrap();
 
-                if session.connections.get(&username).unwrap().connection_type
-                    == ConnectionType::Controller
-                {
+                if session.connections.get(&username).unwrap().user_type == UserType::Controller {
                     session.host().send(packet)?;
                 }
             }
@@ -25,9 +23,7 @@ pub fn handle_participant(
                 let session = session.lock().unwrap();
 
                 // can send to host only if participant, not unready
-                if session.connections.get(&username).unwrap().connection_type
-                    == ConnectionType::Participant
-                {
+                if session.connections.get(&username).unwrap().user_type == UserType::Participant {
                     session.host().send(packet)?;
                 } else {
                     // send DenyRequest because not participant

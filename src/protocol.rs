@@ -116,8 +116,6 @@ pub enum Packet {
         bytes: Vec<u8>,
     },
 
-    MergeUnready,
-
     SessionExit,
 
     RequestControl {
@@ -218,8 +216,10 @@ impl ProtocolMessage for Packet {
                 result.extend_from_slice(bytes);
             }
 
-            Packet::MergeUnready => {
+            Packet::SeekTo { time_seconds } => {
                 result.push(8);
+
+                result.extend_from_slice(&time_seconds.to_be_bytes());
             }
 
             Packet::SessionExit => {
@@ -277,12 +277,6 @@ impl ProtocolMessage for Packet {
 
             Packet::SeekInit => {
                 result.push(19);
-            }
-
-            Packet::SeekTo { time_seconds } => {
-                result.push(20);
-
-                result.extend_from_slice(&time_seconds.to_be_bytes());
             }
         }
 
@@ -366,8 +360,12 @@ impl ProtocolMessage for Packet {
                 Some(Self::Screen { bytes })
             }
 
-            // MergeUnready
-            8 => Some(Self::MergeUnready),
+            // SeekTo
+            8 => {
+                let time_seconds = get_i32_from_packet(&mut bytes)?;
+
+                Some(Self::SeekTo { time_seconds })
+            }
 
             // SessionExit
             9 => Some(Self::SessionExit),
@@ -428,13 +426,6 @@ impl ProtocolMessage for Packet {
 
             // SeekInit
             19 => Some(Self::SeekInit),
-
-            // SeekTo
-            20 => {
-                let time_seconds = get_i32_from_packet(&mut bytes)?;
-
-                Some(Self::SeekTo { time_seconds })
-            }
 
             _ => None,
         }

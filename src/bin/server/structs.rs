@@ -2,14 +2,6 @@ use std::{collections::HashMap, sync::mpsc::Sender};
 
 use remote_desktop::{protocol::Packet, secure_channel::SecureChannel, UserType};
 
-#[derive(PartialEq, Eq, Debug)]
-pub enum ConnectionType {
-    Host,
-    Controller,
-    Participant,
-    Unready,
-}
-
 pub struct Recording {
     pub filename: String,
     pub time: String,
@@ -17,7 +9,6 @@ pub struct Recording {
 
 pub struct Connection {
     pub channel: SecureChannel,
-    pub connection_type: ConnectionType,
     pub user_type: UserType,
     pub join_request_sender: Option<Sender<bool>>,
 }
@@ -48,8 +39,8 @@ impl Session {
 
     pub fn broadcast_participants(&mut self, packet: Packet) -> std::io::Result<()> {
         for (_, connection) in &mut self.connections {
-            if connection.connection_type == ConnectionType::Participant
-                || connection.connection_type == ConnectionType::Controller
+            if connection.user_type == UserType::Participant
+                || connection.user_type == UserType::Controller
             {
                 connection.channel.send(packet.clone())?;
             }
@@ -61,7 +52,7 @@ impl Session {
     pub fn host(&self) -> SecureChannel {
         self.connections
             .iter()
-            .find(|(_, conn)| conn.connection_type == ConnectionType::Host)
+            .find(|(_, conn)| conn.user_type == UserType::Host)
             .unwrap()
             .1
             .channel

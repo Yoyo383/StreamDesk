@@ -1,7 +1,7 @@
 use eframe::egui;
 use h264_reader::{
     annexb::AnnexBReader,
-    nal::{Nal, RefNal, UnitType},
+    nal::{Nal, RefNal},
     push::NalInterest,
 };
 use remote_desktop::{
@@ -73,17 +73,8 @@ fn thread_send_screen(
                 return NalInterest::Buffer; // not ready yet
             }
 
-            // getting nal unit type
-            let nal_header = match nal.header() {
-                Ok(header) => header,
-                Err(_) => return NalInterest::Ignore,
-            };
-
-            let nal_type = nal_header.nal_unit_type();
-
-            // SPS means that a keyframe is on its way
-            if nal_type == UnitType::SeqParameterSet {
-                channel.send(Packet::MergeUnready).unwrap();
+            if nal.header().is_err() {
+                return NalInterest::Ignore;
             }
 
             // sending the NAL (with the start)

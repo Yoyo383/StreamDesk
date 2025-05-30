@@ -1,4 +1,4 @@
-use crate::{get_video_path, structs::*, SessionHashMap, SharedSession};
+use crate::{get_video_path, SessionHashMap, SharedSession};
 use chrono::Local;
 
 use r2d2::Pool;
@@ -121,16 +121,6 @@ pub fn handle_host(
                 session.broadcast_participants(packet)?;
             }
 
-            Packet::MergeUnready => {
-                let mut session = session.lock().unwrap();
-
-                for (_, connection) in &mut session.connections {
-                    if connection.connection_type == ConnectionType::Unready {
-                        connection.connection_type = ConnectionType::Participant;
-                    }
-                }
-            }
-
             Packet::SessionExit | Packet::None => {
                 let mut session = session.lock().unwrap();
 
@@ -145,7 +135,6 @@ pub fn handle_host(
             Packet::RequestControl { username } => {
                 let mut session = session.lock().unwrap();
                 if let Some(user_connection) = session.connections.get_mut(&username) {
-                    user_connection.connection_type = ConnectionType::Controller;
                     user_connection.user_type = UserType::Controller;
 
                     let packet = Packet::RequestControl {
@@ -166,10 +155,8 @@ pub fn handle_host(
             Packet::DenyControl { username } => {
                 let mut session = session.lock().unwrap();
                 if let Some(user_connection) = session.connections.get_mut(&username) {
-                    let was_controller =
-                        user_connection.connection_type == ConnectionType::Controller;
+                    let was_controller = user_connection.user_type == UserType::Controller;
 
-                    user_connection.connection_type = ConnectionType::Participant;
                     user_connection.user_type = UserType::Participant;
 
                     let packet = Packet::DenyControl {
