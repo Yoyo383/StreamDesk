@@ -64,6 +64,8 @@ fn thread_receive_socket(mut channel: SecureChannel, stdin: ChildStdin) -> JoinH
                     stdin = None;
                 }
 
+                Packet::SeekInit => break,
+
                 Packet::SessionExit => break,
 
                 _ => (),

@@ -156,7 +156,7 @@ pub fn handle_host(
                     // notify all users
                     let user_update = Packet::UserUpdate {
                         user_type: UserType::Controller,
-                        joined_before: false,
+                        joined_before: true,
                         username: username.to_string(),
                     };
                     session.broadcast_all(user_update)?;
@@ -181,7 +181,7 @@ pub fn handle_host(
                     if was_controller {
                         let user_update = Packet::UserUpdate {
                             user_type: UserType::Participant,
-                            joined_before: false,
+                            joined_before: true,
                             username: username.to_string(),
                         };
                         session.broadcast_all(user_update)?;

@@ -156,7 +156,7 @@ fn thread_read_decoded(
 }
 
 /// The main scene.
-pub struct MainScene {
+pub struct ParticipantScene {
     now: Instant,
     elapsed_time: f32,
 
@@ -180,7 +180,7 @@ pub struct MainScene {
     ffmpeg_command: Child,
 }
 
-impl MainScene {
+impl ParticipantScene {
     /// Creates a new `MainScene` and starts the `receive_socket` thread and the `read_decoded` thread.
     pub fn new(channel: &mut SecureChannel, username: String) -> Self {
         let mut ffmpeg = start_ffmpeg();
@@ -367,7 +367,7 @@ impl MainScene {
     }
 }
 
-impl Scene for MainScene {
+impl Scene for ParticipantScene {
     fn update(&mut self, ctx: &egui::Context, channel: &mut Option<SecureChannel>) -> SceneChange {
         let channel = channel.as_mut().unwrap();
         let mut result: SceneChange = SceneChange::None;

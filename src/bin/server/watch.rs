@@ -119,7 +119,7 @@ pub fn handle_watching(channel: &mut SecureChannel, filename: &str) -> std::io::
                 let _ = thread_send.take().unwrap().join();
 
                 // send session exit
-                channel.send(Packet::SessionExit)?;
+                channel.send(Packet::SeekInit)?;
             }
 
             Packet::SeekTo { time_seconds } => {

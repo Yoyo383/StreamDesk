@@ -13,7 +13,8 @@ use remote_desktop::{
 };
 
 use crate::{
-    host_scene::HostScene, login_scene::LoginScene, main_scene::MainScene, watch_scene::WatchScene,
+    host_scene::HostScene, login_scene::LoginScene, participant_scene::ParticipantScene,
+    watch_scene::WatchScene,
 };
 
 fn receive_recordings(channel: &mut SecureChannel) -> Vec<(i32, String)> {
@@ -129,7 +130,7 @@ impl Scene for MenuScene {
 
                 match join_result {
                     true => {
-                        result = SceneChange::To(Box::new(MainScene::new(
+                        result = SceneChange::To(Box::new(ParticipantScene::new(
                             channel,
                             self.username.clone(),
                         )))

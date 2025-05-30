@@ -9,9 +9,9 @@ use remote_desktop::{Scene, SceneChange};
 
 mod host_scene;
 mod login_scene;
-mod main_scene;
 mod menu_scene;
 mod modifiers_state;
+mod participant_scene;
 mod watch_scene;
 
 /// Starts a thread to connect to the server. When connected, sends the new `SecureChannel` to the sender.
