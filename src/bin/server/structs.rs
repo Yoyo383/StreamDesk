@@ -10,12 +10,11 @@ pub struct Recording {
 pub struct Connection {
     pub channel: SecureChannel,
     pub user_type: UserType,
-    pub join_request_sender: Option<Sender<bool>>,
 }
 
 pub struct Session {
     pub connections: HashMap<String, Connection>,
-    pub pending_join: HashMap<String, Connection>,
+    pub pending_join: HashMap<String, (Connection, Sender<bool>)>,
 }
 
 impl Session {

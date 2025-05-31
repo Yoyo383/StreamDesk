@@ -69,13 +69,14 @@ pub fn handle_host(
             Packet::Join { username, .. } => {
                 let mut session = session.lock().unwrap();
 
-                if let Some(mut connection) = session.pending_join.remove(&username) {
+                if let Some((mut connection, join_sender)) = session.pending_join.remove(&username)
+                {
                     // notify user they were allowed
                     let success = ResultPacket::Success("Joining".to_string());
                     connection.channel.send(success)?;
 
                     // notify user thread
-                    let _ = connection.join_request_sender.take().unwrap().send(true);
+                    let _ = join_sender.send(true);
 
                     // send all usernames
                     for (username, user_connection) in &session.connections {
@@ -102,13 +103,13 @@ pub fn handle_host(
             Packet::DenyJoin { username } => {
                 let mut session = session.lock().unwrap();
 
-                if let Some(connection) = session.pending_join.get_mut(&username) {
+                if let Some((connection, join_sender)) = session.pending_join.get_mut(&username) {
                     // notify user they were denied
                     let failure = ResultPacket::Failure("You were denied by the host.".to_string());
                     connection.channel.send(failure)?;
 
                     // notify user thread
-                    let _ = connection.join_request_sender.take().unwrap().send(false);
+                    let _ = join_sender.send(false);
                 }
 
                 // remove from pending

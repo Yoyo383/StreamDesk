@@ -2,6 +2,7 @@ use std::net::TcpStream;
 use std::sync::mpsc::{self, Sender};
 use std::thread;
 
+use eframe::egui::Visuals;
 use eframe::{egui, NativeOptions};
 use login_scene::LoginScene;
 use remote_desktop::secure_channel::SecureChannel;
@@ -74,9 +75,10 @@ fn main() {
     };
 
     let _ = eframe::run_native(
-        "Screen Capture",
+        "Remote Desktop",
         options,
         Box::new(move |cc| {
+            cc.egui_ctx.set_visuals(Visuals::dark());
             egui_extras::install_image_loaders(&cc.egui_ctx);
             Ok(Box::new(MyApp::new()))
         }),

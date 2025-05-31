@@ -156,7 +156,6 @@ fn handle_client(
                         let host_connection = Connection {
                             channel: channel.clone(),
                             user_type: UserType::Host,
-                            join_request_sender: None,
                         };
 
                         let session =
@@ -217,11 +216,10 @@ fn handle_client(
                             let connection = Connection {
                                 channel: channel.clone(),
                                 user_type: UserType::Participant,
-                                join_request_sender: Some(sender),
                             };
                             session_guard
                                 .pending_join
-                                .insert(username.clone(), connection);
+                                .insert(username.clone(), (connection, sender));
 
                             drop(session_guard);
 
