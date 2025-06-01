@@ -1,4 +1,4 @@
-use crate::RECORDINGS_FOLDER;
+use crate::get_video_path;
 use h264_reader::{
     annexb::AnnexBReader,
     nal::{Nal, RefNal},
@@ -9,7 +9,6 @@ use remote_desktop::{protocol::Packet, secure_channel::SecureChannel};
 
 use std::{
     io::Read,
-    path::PathBuf,
     process::{Child, ChildStdout, Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -18,8 +17,17 @@ use std::{
     thread::{self, JoinHandle},
 };
 
+/// Starts an `ffmpeg` process that encodes the video file with H.264.
+///
+/// # Arguments
+///
+/// * `filename` - The filename of the video (without the extension).
+/// * `time_seconds` - The wanted starting time of the video.
+///
+/// # Returns
+/// The subprocess `Child` object.
 fn ffmpeg_send_recording(filename: &str, time_seconds: i32) -> Child {
-    let input_path = PathBuf::from(RECORDINGS_FOLDER).join(format!("{filename}.mp4"));
+    let input_path = get_video_path(filename);
 
     let ffmpeg = Command::new("ffmpeg")
         .args(&[
@@ -47,6 +55,17 @@ fn ffmpeg_send_recording(filename: &str, time_seconds: i32) -> Child {
     ffmpeg
 }
 
+/// Starts a thread to send the H.264 NAL units.
+///
+/// # Arguments
+///
+/// * `channel` - The `SecureChannel` to send to.
+/// * `stdout` - The `ffmpeg` stdout to read the H.264 stream from.
+/// * `stop_flag` - The flag that tells the thread to stop.
+///
+/// # Returns
+///
+/// The thread's `JoinHandle`.
 fn thread_send_screen(
     mut channel: SecureChannel,
     mut stdout: ChildStdout,
@@ -96,6 +115,15 @@ fn thread_send_screen(
     })
 }
 
+/// Handles packets from the client.
+///
+/// # Arguments
+/// * `channel` - The `SecureChannel` connected to the client.
+/// * `filename` - The filename of the played video.
+///
+/// # Returns
+///
+/// An `std::io::Result<()>` that signifies if something went wrong.
 pub fn handle_watching(channel: &mut SecureChannel, filename: &str) -> std::io::Result<()> {
     let mut ffmpeg = ffmpeg_send_recording(filename, 0);
     let mut stdout = ffmpeg.stdout.take().unwrap();

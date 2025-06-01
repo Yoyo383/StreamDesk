@@ -27,6 +27,21 @@ use winapi::um::winuser::{
 
 use crate::menu_scene::MenuScene;
 
+/// Starts FFmpeg process to capture desktop screen as H.264 stream
+///
+/// This function launches FFmpeg with optimized settings for real-time screen sharing:
+/// - Uses gdigrab for Windows desktop capture
+/// - 30 FPS framerate for smooth playback
+/// - Ultrafast preset with zero latency tuning for minimal delay
+/// - H.264 encoding with no scene cut detection for consistent streaming
+///
+/// # Returns
+///
+/// A `Child` process handle for the running FFmpeg instance
+///
+/// # Panics
+///
+/// Panics if FFmpeg cannot be started (e.g., FFmpeg not installed or not in PATH)
 fn start_ffmpeg() -> Child {
     let ffmpeg = Command::new("ffmpeg")
         .args(&[
@@ -62,6 +77,23 @@ fn start_ffmpeg() -> Child {
     ffmpeg
 }
 
+/// Background thread for reading FFmpeg output and sending screen data to clients
+///
+/// This function creates a thread that:
+/// 1. Reads H.264 NAL units from FFmpeg stdout
+/// 2. Processes each complete NAL unit using AnnexBReader
+/// 3. Sends screen packets to connected clients via secure channel
+/// 4. Continues until stop flag is set
+///
+/// # Arguments
+///
+/// * `channel` - Secure communication channel for sending packets
+/// * `stdout` - FFmpeg process stdout handle for reading video data
+/// * `stop_flag` - Atomic boolean to signal thread termination
+///
+/// # Returns
+///
+/// A `JoinHandle` for the spawned thread
 fn thread_send_screen(
     mut channel: SecureChannel,
     mut stdout: ChildStdout,
@@ -105,6 +137,27 @@ fn thread_send_screen(
     })
 }
 
+/// Background thread for handling incoming network packets from clients
+///
+/// This function processes various packet types:
+/// - Join requests from new users
+/// - User status updates (joining/leaving/role changes)
+/// - Control packets (mouse/keyboard input from controllers)
+/// - Control requests from viewers
+/// - Chat messages
+/// - Session end signals
+///
+/// # Arguments
+///
+/// * `channel` - Secure communication channel for receiving packets
+/// * `usernames` - Shared map of connected users and their roles
+/// * `requesting_control` - Set of users requesting control permissions
+/// * `requesting_join` - Set of users requesting to join the session
+/// * `chat_log` - Shared chat message history
+///
+/// # Returns
+///
+/// A `JoinHandle` for the spawned thread
 fn thread_read_socket(
     mut channel: SecureChannel,
     usernames: Arc<Mutex<HashMap<String, UserType>>>,
@@ -177,6 +230,19 @@ fn thread_read_socket(
     })
 }
 
+/// Sends mouse movement input to the host system
+///
+/// Uses Windows API to simulate mouse cursor movement at absolute coordinates.
+/// The coordinates are treated as absolute positions on the screen.
+///
+/// # Arguments
+///
+/// * `mouse_x` - Absolute X coordinate for mouse position
+/// * `mouse_y` - Absolute Y coordinate for mouse position
+///
+/// # Safety
+///
+/// This function uses unsafe Windows API calls to inject input events
 fn send_mouse_move(mouse_x: u32, mouse_y: u32) {
     unsafe {
         let mut move_input: INPUT = std::mem::zeroed();
@@ -199,6 +265,21 @@ fn send_mouse_move(mouse_x: u32, mouse_y: u32) {
     }
 }
 
+/// Sends mouse click input to the host system
+///
+/// Simulates mouse button press/release events at specified coordinates.
+/// Supports primary (left), secondary (right), and middle mouse buttons.
+///
+/// # Arguments
+///
+/// * `mouse_x` - Absolute X coordinate for click position
+/// * `mouse_y` - Absolute Y coordinate for click position  
+/// * `button` - Which mouse button to simulate (Primary/Secondary/Middle)
+/// * `pressed` - Whether this is a button press (`true`) or release (`false`)
+///
+/// # Safety
+///
+/// This function uses unsafe Windows API calls to inject input events
 fn send_mouse_click(mouse_x: u32, mouse_y: u32, button: PointerButton, pressed: bool) {
     unsafe {
         let mut flags: u32 = winuser::MOUSEEVENTF_ABSOLUTE | winuser::MOUSEEVENTF_MOVE;
@@ -243,6 +324,18 @@ fn send_mouse_click(mouse_x: u32, mouse_y: u32, button: PointerButton, pressed: 
     }
 }
 
+/// Sends mouse scroll wheel input to the host system
+///
+/// Simulates vertical scrolling with the specified delta value.
+/// Positive delta scrolls up, negative delta scrolls down.
+///
+/// # Arguments
+///
+/// * `delta` - Scroll amount and direction (positive = up, negative = down)
+///
+/// # Safety
+///
+/// This function uses unsafe Windows API calls to inject input events
 fn send_scroll(delta: i32) {
     unsafe {
         let mut scroll_input: INPUT = std::mem::zeroed();
@@ -265,6 +358,18 @@ fn send_scroll(delta: i32) {
     }
 }
 
+/// Sends keyboard input to the host system
+///
+/// Simulates key press or release events using Windows virtual key codes.
+///
+/// # Arguments
+///
+/// * `key` - Windows virtual key code for the key to simulate
+/// * `pressed` - Whether this is a key press (`true`) or release (`false`)
+///
+/// # Safety
+///
+/// This function uses unsafe Windows API calls to inject input events
 fn send_key(key: u16, pressed: bool) {
     unsafe {
         let mut key_input: INPUT = std::mem::zeroed();
@@ -286,24 +391,63 @@ fn send_key(key: u16, pressed: bool) {
     }
 }
 
+/// Main scene struct for hosting a remote desktop session
+///
+/// The `HostScene` manages the entire hosting experience including:
+/// - Screen capture and streaming via FFmpeg
+/// - User management and permissions
+/// - Control request handling
+/// - Chat functionality
+/// - Session lifecycle management
+///
+/// This scene runs background threads for screen capture and network communication
+/// while presenting a GUI for session management.
 pub struct HostScene {
+    /// Unique session code that clients use to join
     session_code: String,
+    /// Flag to signal background threads to stop
     stop_flag: Arc<AtomicBool>,
 
+    /// Map of connected users and their roles (Host/Controller/Viewer)
     usernames: Arc<Mutex<HashMap<String, UserType>>>,
+    /// Username of the session host
     username: String,
+    /// Set of users requesting control permissions
     requesting_control: Arc<Mutex<HashSet<String>>>,
+    /// Set of users requesting to join the session
     requesting_join: Arc<Mutex<HashSet<String>>>,
 
+    /// Shared chat message history
     chat_log: Arc<Mutex<Vec<String>>>,
+    /// Current chat message being composed
     chat_message: String,
 
+    /// FFmpeg process handle for screen capture
     ffmpeg_command: Child,
+    /// Background thread handle for screen streaming
     thread_send_screen: Option<JoinHandle<()>>,
+    /// Background thread handle for network communication
     thread_read_socket: Option<JoinHandle<()>>,
 }
 
 impl HostScene {
+    /// Creates a new host scene and starts screen sharing
+    ///
+    /// This constructor:
+    /// 1. Starts FFmpeg for screen capture
+    /// 2. Spawns background threads for streaming and network handling
+    /// 3. Initializes user management structures
+    /// 4. Sets up chat functionality
+    ///
+    /// # Arguments
+    ///
+    /// * `session_code` - Unique code for this session
+    /// * `channel` - Secure communication channel to clients
+    /// * `username` - Host's username
+    ///
+    /// # Returns
+    ///
+    /// A new `HostScene` instance ready for use
     pub fn new(session_code: String, channel: &mut SecureChannel, username: String) -> Self {
         let mut command = start_ffmpeg();
         let stdout = command.stdout.take().unwrap();
@@ -347,6 +491,23 @@ impl HostScene {
         }
     }
 
+    /// Cleanly disconnects and shuts down the hosting session
+    ///
+    /// This method:
+    /// 1. Signals background threads to stop
+    /// 2. Waits for screen streaming thread to finish
+    /// 3. Terminates FFmpeg process
+    /// 4. Sends `SessionExit` message
+    /// 5. Waits for network thread to finish
+    /// 6. Returns to the main menu
+    ///
+    /// # Arguments
+    ///
+    /// * `channel` - Communication channel to send exit notifications
+    ///
+    /// # Returns
+    ///
+    /// A `SceneChange` to transition back to the menu scene
     fn disconnect(&mut self, channel: &mut SecureChannel) -> SceneChange {
         self.stop_flag.store(true, Ordering::Relaxed);
 
@@ -362,6 +523,23 @@ impl HostScene {
 }
 
 impl Scene for HostScene {
+    /// Updates the host scene GUI and handles user interactions
+    ///
+    /// Renders three main panels:
+    /// 1. **Right Panel**: Chat interface for communication
+    /// 2. **Left Panel**: Control and join request management
+    /// 3. **Central Panel**: Session info, user list, and session controls
+    ///
+    /// Also handles the keyboard shortcut Ctrl+Shift+R to revoke control.
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx` - egui context for rendering GUI
+    /// * `channel` - Communication channel for sending packets
+    ///
+    /// # Returns
+    ///
+    /// A `SceneChange` indicating any scene transitions needed
     fn update(&mut self, ctx: &egui::Context, channel: &mut SecureChannel) -> SceneChange {
         let mut result: SceneChange = SceneChange::None;
 
@@ -502,6 +680,7 @@ impl Scene for HostScene {
 
         let input = ctx.input(|i| i.clone());
 
+        // Handle Ctrl+Shift+R hotkey to revoke control
         if input.key_pressed(egui::Key::R) && input.modifiers.command && input.modifiers.shift {
             let usernames = self.usernames.lock().unwrap();
             let controller = usernames
@@ -519,6 +698,17 @@ impl Scene for HostScene {
         result
     }
 
+    /// Performs cleanup when exiting the host scene
+    ///
+    /// This ensures proper session shutdown by:
+    /// 1. Disconnecting from the session
+    /// 2. Sending `SignOut` message
+    /// 3. Sending `Shutdown` command
+    /// 4. Closing the communication channel
+    ///
+    /// # Arguments
+    ///
+    /// * `channel` - Communication channel for sending exit notifications
     fn on_exit(&mut self, channel: &mut SecureChannel) {
         self.disconnect(channel);
 

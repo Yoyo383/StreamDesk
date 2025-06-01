@@ -2,6 +2,7 @@ use crate::UserType;
 use eframe::egui::PointerButton;
 use std::collections::VecDeque;
 
+/// Defines a trait for messages that can be converted to and from bytes for network transmission.
 pub trait ProtocolMessage {
     /// Turns a `ProtocolMessage` into bytes that can be sent over a socket.
     fn to_bytes(&self) -> Vec<u8>;
@@ -14,39 +15,112 @@ pub trait ProtocolMessage {
         Self: Sized;
 }
 
+/// Extracts a `u32` (unsigned 32-bit integer) from the beginning of a `VecDeque<u8>`.
+///
+/// This function assumes the `u32` is stored in big-endian format. It removes the
+/// 4 bytes corresponding to the `u32` from the `VecDeque`.
+///
+/// # Arguments
+///
+/// * `bytes` - A mutable reference to a `VecDeque<u8>` containing the byte stream.
+///
+/// # Returns
+///
+/// An `Option<u32>` which is:
+/// - `Some(value)` if 4 bytes were successfully read and converted to a `u32`.
+/// - `None` if there were not enough bytes in the `VecDeque` to form a `u32`.
 pub fn get_u32_from_packet(bytes: &mut VecDeque<u8>) -> Option<u32> {
     let data: Vec<u8> = bytes.drain(0..4).collect();
     Some(u32::from_be_bytes(data.try_into().ok()?))
 }
 
+/// Extracts an `i32` (signed 32-bit integer) from the beginning of a `VecDeque<u8>`.
+///
+/// This function assumes the `i32` is stored in big-endian format. It removes the
+/// 4 bytes corresponding to the `i32` from the `VecDeque`.
+///
+/// # Arguments
+///
+/// * `bytes` - A mutable reference to a `VecDeque<u8>` containing the byte stream.
+///
+/// # Returns
+///
+/// An `Option<i32>` which is:
+/// - `Some(value)` if 4 bytes were successfully read and converted to an `i32`.
+/// - `None` if there were not enough bytes in the `VecDeque` to form an `i32`.
 pub fn get_i32_from_packet(bytes: &mut VecDeque<u8>) -> Option<i32> {
     let data: Vec<u8> = bytes.drain(0..4).collect();
     Some(i32::from_be_bytes(data.try_into().ok()?))
 }
 
+/// Extracts a `u16` (unsigned 16-bit integer) from the beginning of a `VecDeque<u8>`.
+///
+/// This function assumes the `u16` is stored in big-endian format. It removes the
+/// 2 bytes corresponding to the `u16` from the `VecDeque`.
+///
+/// # Arguments
+///
+/// * `bytes` - A mutable reference to a `VecDeque<u8>` containing the byte stream.
+///
+/// # Returns
+///
+/// An `Option<u16>` which is:
+/// - `Some(value)` if 2 bytes were successfully read and converted to a `u16`.
+/// - `None` if there were not enough bytes in the `VecDeque` to form a `u16`.
 pub fn get_u16_from_packet(bytes: &mut VecDeque<u8>) -> Option<u16> {
     let data: Vec<u8> = bytes.drain(0..2).collect();
     Some(u16::from_be_bytes(data.try_into().ok()?))
 }
 
-/// Reads a `u32` integer from the socket (in big endian) and then reads that number of bytes.
+/// Reads a `u32` integer from the beginning of a `VecDeque<u8>` (in big-endian format)
+/// and then reads that number of subsequent bytes.
+///
+/// This function is typically used for length-prefixed data, where the first 4 bytes
+/// indicate the length of the data that follows.
+///
+/// # Arguments
+///
+/// * `bytes` - A mutable reference to a `VecDeque<u8>` containing the byte stream.
+///
+/// # Returns
+///
+/// An `Option<Vec<u8>>` which is:
+/// - `Some(data)` if a length and the corresponding data were successfully read.
+/// - `None` if there were not enough bytes for the length or the data itself.
 fn read_length_and_data(bytes: &mut VecDeque<u8>) -> Option<Vec<u8>> {
     let len = get_u32_from_packet(bytes)? as usize;
 
     Some(bytes.drain(..len).collect())
 }
 
+/// Writes the length of a string as a `u32` (big-endian) followed by the string's bytes
+/// into a mutable byte vector.
+///
+/// This function is used to serialize length-prefixed strings for network transmission.
+///
+/// # Arguments
+///
+/// * `bytes` - A mutable reference to a `Vec<u8>` where the length and string bytes will be appended.
+/// * `string` - A string slice (`&str`) to be written.
 fn write_length_and_string(bytes: &mut Vec<u8>, string: &str) {
     bytes.extend_from_slice(&(string.len() as u32).to_be_bytes());
     bytes.extend_from_slice(string.as_bytes());
 }
 
+/// Represents the result of an operation, either a success or a failure,
+/// both carrying a descriptive message.
 pub enum ResultPacket {
+    /// Indicates a failed operation with an associated error message.
     Failure(String),
+    /// Indicates a successful operation with an associated success message.
     Success(String),
 }
 
 impl ProtocolMessage for ResultPacket {
+    /// Converts a `ResultPacket` into a byte vector for network transmission.
+    ///
+    /// The first byte indicates the packet type (0 for Failure, 1 for Success),
+    /// followed by a length-prefixed UTF-8 string for the message.
     fn to_bytes(&self) -> Vec<u8> {
         match self {
             ResultPacket::Failure(msg) => {
@@ -65,6 +139,24 @@ impl ProtocolMessage for ResultPacket {
         }
     }
 
+    /// Attempts to create a `ResultPacket` from a byte vector.
+    ///
+    /// The function expects the first byte to indicate the packet type (0 or 1),
+    /// followed by a length-prefixed UTF-8 string.
+    ///
+    /// # Arguments
+    ///
+    /// * `bytes` - A `Vec<u8>` containing the raw byte data of the packet.
+    ///
+    /// # Returns
+    ///
+    /// An `Option<ResultPacket>` which is:
+    /// - `Some(ResultPacket)` if the bytes represent a valid `ResultPacket`.
+    /// - `None` if the bytes are malformed or the packet type is unknown.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the message part of the bytes is not valid UTF-8.
     fn from_bytes(bytes: Vec<u8>) -> Option<Self> {
         let mut bytes = VecDeque::from(bytes);
 
@@ -80,84 +172,82 @@ impl ProtocolMessage for ResultPacket {
     }
 }
 
+/// Represents the various types of packets that can be sent between the client and server.
+/// Each variant encapsulates specific data related to its purpose.
 #[derive(PartialEq, Default, Clone)]
 pub enum Packet {
+    /// Default state, representing no specific packet.
     #[default]
     None,
 
-    Login {
-        username: String,
-        password: String,
-    },
+    /// Packet for user login attempts.
+    Login { username: String, password: String },
 
-    Register {
-        username: String,
-        password: String,
-    },
+    /// Packet for new user registration.
+    Register { username: String, password: String },
 
+    /// Packet indicating a user wants to host a session.
     Host,
 
-    Join {
-        code: u32,
-        username: String,
-    },
+    /// Packet for a user attempting to join an existing session.
+    Join { code: u32, username: String },
 
+    /// Packet to update information about a user in a session.
     UserUpdate {
         user_type: UserType,
         joined_before: bool,
         username: String,
     },
 
-    Control {
-        payload: ControlPayload,
-    },
+    /// Packet containing control input (mouse, keyboard, scroll).
+    Control { payload: ControlPayload },
 
-    Screen {
-        bytes: Vec<u8>,
-    },
+    /// Packet containing screen image data.
+    Screen { bytes: Vec<u8> },
 
+    /// Packet to signal a user is exiting the current session.
     SessionExit,
 
-    RequestControl {
-        username: String,
-    },
+    /// Packet for a participant requesting control of the host's screen.
+    RequestControl { username: String },
 
-    DenyControl {
-        username: String,
-    },
+    /// Packet for the host denying a control request from a participant.
+    DenyControl { username: String },
 
+    /// Packet for a user signing out.
     SignOut,
 
+    /// Packet to initiate a shutdown.
     Shutdown,
 
+    /// Packet to signal the end of a session.
     SessionEnd,
 
-    Chat {
-        message: String,
-    },
+    /// Packet for sending chat messages.
+    Chat { message: String },
 
-    WatchRecording {
-        id: i32,
-    },
+    /// Packet to request watching a specific recording by its ID.
+    WatchRecording { id: i32 },
 
-    RecordingName {
-        id: i32,
-        name: String,
-    },
+    /// Packet containing the name of a recording, identified by its ID.
+    RecordingName { id: i32, name: String },
 
-    DenyJoin {
-        username: String,
-    },
+    /// Packet for the host denying a join request from a user.
+    DenyJoin { username: String },
 
+    /// Packet to initialize seeking in a recording.
     SeekInit,
 
-    SeekTo {
-        time_seconds: i32,
-    },
+    /// Packet to seek to a specific time in a recording.
+    SeekTo { time_seconds: i32 },
 }
 
 impl ProtocolMessage for Packet {
     /// Turns a `Packet` into bytes that can be sent over a socket.
+    ///
+    /// Each packet type is prefixed with a unique byte identifier, followed by
+    /// its specific data, often length-prefixed strings or fixed-size integers
+    /// in big-endian format.
     fn to_bytes(&self) -> Vec<u8> {
         let mut result: Vec<u8> = vec![];
 
@@ -283,6 +373,25 @@ impl ProtocolMessage for Packet {
         result
     }
 
+    /// Attempts to create a `Packet` from a byte vector.
+    ///
+    /// The function reads the first byte to determine the packet type and then
+    /// parses the subsequent bytes according to the expected structure of that
+    /// packet type.
+    ///
+    /// # Arguments
+    ///
+    /// * `bytes` - A `Vec<u8>` containing the raw byte data of the packet.
+    ///
+    /// # Returns
+    ///
+    /// An `Option<Packet>` which is:
+    /// - `Some(Packet)` if the bytes represent a valid `Packet`.
+    /// - `None` if the bytes are malformed, incomplete, or the packet type is unknown.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any string data within the packet bytes is not valid UTF-8.
     fn from_bytes(bytes: Vec<u8>) -> Option<Self> {
         let mut bytes = VecDeque::from(bytes);
         let packet_type = bytes.pop_front()?;
@@ -432,13 +541,14 @@ impl ProtocolMessage for Packet {
     }
 }
 
+/// Represents different types of control inputs that can be sent over the network.
+/// These payloads are typically encapsulated within a `Packet::Control` variant.
 #[derive(PartialEq, Clone)]
 pub enum ControlPayload {
-    MouseMove {
-        mouse_x: u32,
-        mouse_y: u32,
-    },
+    /// Represents a mouse movement event.
+    MouseMove { mouse_x: u32, mouse_y: u32 },
 
+    /// Represents a mouse click event.
     MouseClick {
         mouse_x: u32,
         mouse_y: u32,
@@ -446,18 +556,18 @@ pub enum ControlPayload {
         button: PointerButton,
     },
 
-    Keyboard {
-        pressed: bool,
-        key: u16,
-    },
+    /// Represents a keyboard event (key press or release).
+    Keyboard { pressed: bool, key: u16 },
 
-    Scroll {
-        delta: i32,
-    },
+    /// Represents a scroll wheel event.
+    Scroll { delta: i32 },
 }
 
 impl ControlPayload {
     /// Turns a `ControlPayload` into bytes that will then be appended to a `Control` packet.
+    ///
+    /// Each `ControlPayload` type is prefixed with a unique byte identifier, followed by
+    /// its specific data.
     fn to_bytes(&self) -> Vec<u8> {
         let mut result: Vec<u8> = vec![];
 
@@ -502,7 +612,18 @@ impl ControlPayload {
 
     /// Turns a vector of bytes into a `ControlPayload`.
     ///
-    /// Will return `None` if the bytes are not a valid `ControlPayload`.
+    /// The function reads the first byte to determine the payload type and then
+    /// parses the subsequent bytes according to the expected structure of that
+    /// payload type.
+    ///
+    /// # Arguments
+    ///
+    /// * `bytes` - A `Vec<u8>` containing the raw byte data of the control payload.
+    ///
+    /// # Returns
+    ///
+    /// Will return `None` if the bytes are not a valid `ControlPayload` (e.g.,
+    /// insufficient bytes for the payload type, or unknown payload type).
     fn from_bytes(bytes: Vec<u8>) -> Option<Self> {
         let mut bytes = VecDeque::from(bytes);
         let payload_type = bytes.pop_front()?;
@@ -556,7 +677,17 @@ impl ControlPayload {
         }
     }
 
-    /// Returns the length in bytes of a payload type.
+    /// Returns the expected length in bytes of a specific `ControlPayload` type.
+    ///
+    /// This is useful for pre-allocating buffers or validating incoming data.
+    ///
+    /// # Arguments
+    ///
+    /// * `payload_type` - The byte identifier of the `ControlPayload` type.
+    ///
+    /// # Returns
+    ///
+    /// The expected length in bytes for the given payload type. Returns 0 for unknown types.
     fn get_length(payload_type: u8) -> usize {
         match payload_type {
             0 => 8,  // MouseMove

@@ -17,6 +17,21 @@ use crate::{
     watch_scene::WatchScene,
 };
 
+/// Receives and processes a list of available recordings from the server.
+///
+/// This function continuously receives packets from the server until a `Packet::None`
+/// is encountered, indicating the end of the recording list. It collects recording IDs
+/// and names into a `HashMap` and then converts them into a sorted `Vec` of `(id, name)` tuples,
+/// ordered by creation time in reverse (newest first).
+///
+/// # Arguments
+///
+/// * `channel` - A mutable reference to the `SecureChannel` for communication with the server.
+///
+/// # Returns
+///
+/// A `Vec` of `(i32, String)` tuples, where `i32` is the recording ID and `String` is the recording name (timestamp),
+/// sorted by timestamp in descending order.
 fn receive_recordings(channel: &mut SecureChannel) -> Vec<(i32, String)> {
     let mut recordings = HashMap::new();
 
@@ -42,18 +57,46 @@ fn receive_recordings(channel: &mut SecureChannel) -> Vec<(i32, String)> {
     recordings
 }
 
+/// Represents the main menu scene of the Remote Desktop client.
+///
+/// In this scene, authenticated users can choose to:
+/// - **Host** a new remote desktop session.
+/// - **Join** an existing remote desktop session as a participant.
+/// - **Watch** previously recorded sessions.
+/// - **Sign out** and return to the login screen.
 pub struct MenuScene {
+    /// The input field for joining a session.
     session_code: String,
+    /// A message displayed to the user, indicating status or errors.
     status_message: String,
+    /// A flag indicating if the `status_message` represents an error.
     is_error: bool,
 
+    /// The username of the currently logged-in user.
     username: String,
+    /// A list of available recordings, with their IDs and names (timestamps).
     recordings: Vec<(i32, String)>,
+    /// An optional receiver for handling asynchronous join session results.
     join_receiver: Option<Receiver<(bool, String)>>,
+    /// A flag to disable UI elements when a background operation (like joining) is in progress.
     is_disabled: bool,
 }
 
 impl MenuScene {
+    /// Creates a new `MenuScene` instance.
+    ///
+    /// Initializes the scene with the logged-in username and retrieves the list of
+    /// available recordings from the server.
+    ///
+    /// # Arguments
+    ///
+    /// * `username` - The username of the logged-in client.
+    /// * `channel` - A mutable reference to the `SecureChannel` for initial data retrieval (recordings).
+    /// * `status_message` - An initial status message to display.
+    ///
+    /// # Returns
+    ///
+    /// A new `MenuScene` ready to be displayed.
     pub fn new(username: String, channel: &mut SecureChannel, status_message: &str) -> Self {
         let recordings = receive_recordings(channel);
 
@@ -69,6 +112,19 @@ impl MenuScene {
         }
     }
 
+    /// Handles the "Host Session" button click.
+    ///
+    /// Sends a `Packet::Host` request to the server. Upon a successful response
+    /// (which should contain the session code), it transitions the application
+    /// to the `HostScene`. Panics if the server response is not a `ResultPacket::Success`.
+    ///
+    /// # Arguments
+    ///
+    /// * `channel` - A mutable reference to the `SecureChannel` for communication with the server.
+    ///
+    /// # Returns
+    ///
+    /// A `SceneChange` variant indicating a transition to `HostScene`.
     fn host_button(&self, channel: &mut SecureChannel) -> SceneChange {
         channel.send(Packet::Host).unwrap();
 
@@ -84,6 +140,22 @@ impl MenuScene {
         )))
     }
 
+    /// Handles the "Join Session" button click.
+    ///
+    /// Sends a `Packet::Join` request to the server with the provided session code and username.
+    /// It then sets up an asynchronous receiver to wait for the host's approval or rejection.
+    /// The UI is disabled while waiting for the approval.
+    ///
+    /// # Arguments
+    ///
+    /// * `session_code` - The 6-digit code of the session to join.
+    /// * `channel` - A mutable reference to the `SecureChannel` for communication with the server.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` indicating success (`Ok` with a waiting message) or failure (`Err` with an error message)
+    /// based on the immediate server response to the join request. The final transition to `ParticipantScene`
+    /// happens asynchronously via `join_receiver`.
     fn join_button(
         &mut self,
         session_code: u32,
@@ -120,6 +192,23 @@ impl MenuScene {
 }
 
 impl Scene for MenuScene {
+    /// Updates and renders the `MenuScene` UI for each frame.
+    ///
+    /// This method checks for asynchronous join results, draws the title bar,
+    /// connection status, user details, recording list, and the main session
+    /// joining and hosting controls. It handles user interactions and triggers
+    /// scene changes as appropriate.
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx` - The `egui::Context` providing access to egui's rendering and input state.
+    /// * `channel` - A mutable reference to the `SecureChannel` for all server communications.
+    ///
+    /// # Returns
+    ///
+    /// A `SceneChange` enum variant, indicating whether the scene should transition
+    /// to `HostScene`, `ParticipantScene`, `WatchScene`, or `LoginScene`, or remain
+    /// in the `MenuScene`.
     fn update(&mut self, ctx: &egui::Context, channel: &mut SecureChannel) -> SceneChange {
         let mut result: SceneChange = SceneChange::None;
 
@@ -295,6 +384,14 @@ impl Scene for MenuScene {
         result
     }
 
+    /// Called when the application is exiting or transitioning away from the `MenuScene`.
+    ///
+    /// This method sends a `SignOut` packet, then a `Shutdown` packet to the server,
+    /// and finally closes the `SecureChannel` to ensure a graceful disconnection.
+    ///
+    /// # Arguments
+    ///
+    /// * `channel` - A mutable reference to the `SecureChannel` to be closed.
     fn on_exit(&mut self, channel: &mut SecureChannel) {
         channel.send(Packet::SignOut).unwrap();
         channel.send(Packet::Shutdown).unwrap();

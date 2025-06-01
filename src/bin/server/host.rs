@@ -14,6 +14,15 @@ use std::{
     process::{Child, Command, Stdio},
 };
 
+/// Starts an `ffmpeg` process that saves the recording to file at the end of the session.
+///
+/// # Arguments
+///
+/// * `filename` - The filename to save the video to.
+///
+/// # Returns
+///
+/// The subprocess `Child` object.
 fn ffmpeg_save_recording(filename: &str) -> Child {
     let output_path = get_video_path(filename);
 
@@ -35,6 +44,13 @@ fn ffmpeg_save_recording(filename: &str) -> Child {
     ffmpeg
 }
 
+/// Inserts the recording data to the database.
+///
+/// # Arguments
+/// * `db_pool` - The pool of the database connections.
+/// * `filename` - The filename of the video.
+/// * `time` - The timestamp of the meeting.
+/// * `user_id` - The ID of the user this recording belongs to.
 fn insert_recording_to_database(
     db_pool: &Pool<SqliteConnectionManager>,
     filename: &str,
@@ -47,6 +63,21 @@ fn insert_recording_to_database(
     );
 }
 
+/// Handles packets from the client.
+///
+/// # Arguments
+///
+/// * `channel` - A `SecureChannel` connected to the client.
+/// * `session` - The `Session` object that the user is connected to.
+/// * `sessions` - The `HashMap` of all the sessions.
+/// * `code` - The session code.
+/// * `username` - The username of the client.
+/// * `user_id` - The user's ID in the database.
+/// * `db_pool` - The pool of the database connections.
+///
+/// # Returns
+///
+/// An `std::io::Result<()>` that signifies if something went wrong.
 pub fn handle_host(
     channel: &mut SecureChannel,
     session: SharedSession,

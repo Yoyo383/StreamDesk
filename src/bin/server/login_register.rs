@@ -6,6 +6,18 @@ use remote_desktop::{
 };
 use rusqlite::{ffi::SQLITE_CONSTRAINT_UNIQUE, params, Error::SqliteFailure};
 
+/// Handles logging in and registering to the server.
+///
+/// # Arguments
+///
+/// * `packet` - The packet received from the client.
+/// * `channel` - The `SecureChannel` connected to the client.
+/// * `db_pool` - The database connection pool.
+///
+/// # Returns
+///
+/// An `std::io::Result<Option<(String, i32)>>` that represents the username and user_id,
+/// and the error if there was.
 pub fn login_or_register(
     packet: Packet,
     channel: &mut SecureChannel,

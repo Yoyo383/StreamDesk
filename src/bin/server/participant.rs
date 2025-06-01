@@ -2,6 +2,17 @@ use remote_desktop::{protocol::Packet, secure_channel::SecureChannel, UserType};
 
 use crate::SharedSession;
 
+/// Handles packets from the client.
+///
+/// # Arguments
+///
+/// * `channel` - A `SecureChannel` connected to the client.
+/// * `session` - The `Session` object that the user is connected to.
+/// * `username` - The username of the client.
+///
+/// # Returns
+///
+/// An `std::io::Result<()>` that signifies if something went wrong.
 pub fn handle_participant(
     channel: &mut SecureChannel,
     session: SharedSession,
