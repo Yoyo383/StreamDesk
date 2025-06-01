@@ -253,8 +253,7 @@ impl WatchScene {
 }
 
 impl Scene for WatchScene {
-    fn update(&mut self, ctx: &egui::Context, channel: &mut Option<SecureChannel>) -> SceneChange {
-        let channel = channel.as_mut().unwrap();
+    fn update(&mut self, ctx: &egui::Context, channel: &mut SecureChannel) -> SceneChange {
         let mut result = SceneChange::None;
 
         let now = Instant::now();
@@ -357,9 +356,7 @@ impl Scene for WatchScene {
         result
     }
 
-    fn on_exit(&mut self, channel: &mut Option<SecureChannel>) {
-        let channel = channel.as_mut().unwrap();
-
+    fn on_exit(&mut self, channel: &mut SecureChannel) {
         self.exit(channel);
 
         channel.send(Packet::SignOut).unwrap();

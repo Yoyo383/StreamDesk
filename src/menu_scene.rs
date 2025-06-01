@@ -120,8 +120,7 @@ impl MenuScene {
 }
 
 impl Scene for MenuScene {
-    fn update(&mut self, ctx: &egui::Context, channel: &mut Option<SecureChannel>) -> SceneChange {
-        let channel = channel.as_mut().unwrap();
+    fn update(&mut self, ctx: &egui::Context, channel: &mut SecureChannel) -> SceneChange {
         let mut result: SceneChange = SceneChange::None;
 
         if let Some(join_receiver) = &self.join_receiver {
@@ -296,9 +295,7 @@ impl Scene for MenuScene {
         result
     }
 
-    fn on_exit(&mut self, channel: &mut Option<SecureChannel>) {
-        let channel = channel.as_mut().unwrap();
-
+    fn on_exit(&mut self, channel: &mut SecureChannel) {
         channel.send(Packet::SignOut).unwrap();
         channel.send(Packet::Shutdown).unwrap();
 

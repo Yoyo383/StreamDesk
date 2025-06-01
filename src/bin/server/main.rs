@@ -322,7 +322,7 @@ fn main() {
                 let sessions_clone = sessions.clone();
                 let db_pool_clone = db_pool.clone();
 
-                let mut channel = SecureChannel::new_server(socket).unwrap();
+                let mut channel = SecureChannel::new_server(Some(socket)).unwrap();
                 thread::spawn(move || {
                     if let Err(_) = handle_client(channel.clone(), sessions_clone, db_pool_clone) {
                         channel.close();

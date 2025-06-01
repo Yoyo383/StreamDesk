@@ -285,10 +285,10 @@ pub trait Scene {
     /// Updates the scene. This function is called every frame and it handles the logic and rendering of the scene.
     ///
     /// If returns `SceneChange::None`, the scene doesn't change. If returns `SceneChange::To(..)`, the scene changes.
-    fn update(&mut self, ctx: &egui::Context, channel: &mut Option<SecureChannel>) -> SceneChange;
+    fn update(&mut self, ctx: &egui::Context, channel: &mut SecureChannel) -> SceneChange;
 
     /// Called when the app is exited. Happens when the user clicks the X button to close the window.
-    fn on_exit(&mut self, channel: &mut Option<SecureChannel>);
+    fn on_exit(&mut self, channel: &mut SecureChannel);
 }
 
 /// Represents the type of each user.

@@ -20,7 +20,7 @@ mod watch_scene;
 fn connect_to_server(sender: Sender<Option<SecureChannel>>) {
     thread::spawn(move || match TcpStream::connect("127.0.0.1:7643") {
         Ok(socket) => {
-            let channel = SecureChannel::new_client(socket).unwrap();
+            let channel = SecureChannel::new_client(Some(socket)).unwrap();
             sender.send(Some(channel))
         }
 
@@ -30,7 +30,7 @@ fn connect_to_server(sender: Sender<Option<SecureChannel>>) {
 
 /// The app struct. Has the `SecureChannel` and the current `Scene`.
 struct MyApp {
-    channel: Option<SecureChannel>,
+    channel: SecureChannel,
     scene: Box<dyn Scene>,
 }
 
@@ -43,7 +43,7 @@ impl MyApp {
         let login = LoginScene::new(Some(receiver), false);
 
         Self {
-            channel: None,
+            channel: SecureChannel::new_client(None).unwrap(),
             scene: Box::new(login),
         }
     }

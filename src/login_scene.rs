@@ -138,13 +138,13 @@ impl LoginScene {
 }
 
 impl Scene for LoginScene {
-    fn update(&mut self, ctx: &egui::Context, channel: &mut Option<SecureChannel>) -> SceneChange {
+    fn update(&mut self, ctx: &egui::Context, channel: &mut SecureChannel) -> SceneChange {
         let mut result: SceneChange = SceneChange::None;
 
         if !self.connected_to_server {
             match self.socket_receiver.as_ref().unwrap().try_recv() {
                 Ok(Some(new_channel)) => {
-                    *channel = Some(new_channel);
+                    *channel = new_channel;
                     self.connected_to_server = true;
                 }
                 Ok(None) => self.failed_to_connect = true,
@@ -232,7 +232,7 @@ impl Scene for LoginScene {
                         )
                         .clicked()
                     {
-                        result = self.login(channel.as_mut().unwrap());
+                        result = self.login(channel);
                     }
 
                     ui.add_space(10.0);
@@ -275,7 +275,7 @@ impl Scene for LoginScene {
                         )
                         .clicked()
                     {
-                        result = self.register(channel.as_mut().unwrap());
+                        result = self.register(channel);
                     }
 
                     ui.add_space(10.0);
@@ -291,9 +291,7 @@ impl Scene for LoginScene {
         result
     }
 
-    fn on_exit(&mut self, channel: &mut Option<SecureChannel>) {
-        let channel = channel.as_mut().unwrap();
-
+    fn on_exit(&mut self, channel: &mut SecureChannel) {
         channel.send(Packet::Shutdown).unwrap();
 
         channel.close();

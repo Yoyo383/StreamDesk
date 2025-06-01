@@ -362,8 +362,7 @@ impl HostScene {
 }
 
 impl Scene for HostScene {
-    fn update(&mut self, ctx: &egui::Context, channel: &mut Option<SecureChannel>) -> SceneChange {
-        let channel = channel.as_mut().unwrap();
+    fn update(&mut self, ctx: &egui::Context, channel: &mut SecureChannel) -> SceneChange {
         let mut result: SceneChange = SceneChange::None;
 
         egui::SidePanel::right("chat").show(ctx, |ui| {
@@ -520,9 +519,7 @@ impl Scene for HostScene {
         result
     }
 
-    fn on_exit(&mut self, channel: &mut Option<SecureChannel>) {
-        let channel = channel.as_mut().unwrap();
-
+    fn on_exit(&mut self, channel: &mut SecureChannel) {
         self.disconnect(channel);
 
         channel.send(Packet::SignOut).unwrap();
