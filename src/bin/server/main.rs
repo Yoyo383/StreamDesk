@@ -1,4 +1,6 @@
+use ftail::Ftail;
 use host::handle_host;
+use log::info;
 use login_register::login_or_register;
 use participant::handle_participant;
 use r2d2::Pool;
@@ -7,12 +9,12 @@ use rand::Rng;
 use remote_desktop::{
     protocol::{Packet, ResultPacket},
     secure_channel::SecureChannel,
-    UserType,
+    UserType, LOG_DIR, SERVER_LOG_FILE,
 };
 use std::{
     collections::HashMap,
     net::TcpListener,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
     sync::{
         mpsc::{self},
@@ -239,7 +241,10 @@ fn handle_client(
                 let packet = channel.receive()?;
 
                 match packet {
-                    Packet::SignOut => break 'menu_scene,
+                    Packet::SignOut => {
+                        info!("User {} signed out.", username);
+                        break 'menu_scene;
+                    }
 
                     Packet::Host => {
                         let mut sessions_guard = sessions.lock().unwrap();
@@ -259,6 +264,11 @@ fn handle_client(
 
                         // send back the session code
                         channel.send(ResultPacket::Success(format!("{}", code)))?;
+
+                        info!(
+                            "User {} started hosting a session with code {}.",
+                            username, code
+                        );
 
                         handle_host(
                             &mut channel,
@@ -315,8 +325,11 @@ fn handle_client(
 
                             drop(session_guard);
 
+                            info!("User {} requested to join session {}.", username, code);
+
                             // if host allowed user then continue
                             if receiver.recv().unwrap() {
+                                info!("User {} was allowed to join session {}.", username, code);
                                 handle_participant(
                                     &mut channel,
                                     session.clone(),
@@ -345,6 +358,11 @@ fn handle_client(
                                     let num_of_frames = get_duration_frames(&recording.filename);
                                     let success = ResultPacket::Success(num_of_frames.to_string());
                                     channel.send(success)?;
+
+                                    info!(
+                                        "User {} is watching recording {}.mp4.",
+                                        username, recording.filename
+                                    );
 
                                     handle_watching(&mut channel, &recording.filename)?;
                                     break;
@@ -386,7 +404,16 @@ fn handle_client(
 /// - Maintains a shared session map for active remote desktop sessions
 /// - Handles connection errors gracefully without terminating the server
 fn main() {
+    let _ = std::fs::create_dir(LOG_DIR);
     let _ = std::fs::create_dir(RECORDINGS_FOLDER);
+
+    let _ = Ftail::new()
+        .single_file(
+            &Path::new(LOG_DIR).join(SERVER_LOG_FILE),
+            true,
+            log::LevelFilter::Off,
+        )
+        .init();
 
     let db_manager = SqliteConnectionManager::file(DATABASE_FILE);
     let db_pool = Arc::new(r2d2::Pool::new(db_manager).unwrap());

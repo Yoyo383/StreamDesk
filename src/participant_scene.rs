@@ -112,12 +112,7 @@ fn thread_receive_socket(
 
         match packet {
             Packet::Screen { bytes } => {
-                // Write received H.264 bytes to ffmpeg's stdin
-                if let Err(e) = stdin.write_all(&bytes) {
-                    eprintln!("Error writing to ffmpeg stdin: {:?}", e);
-                    // Consider setting stop_flag or handling more gracefully
-                    break;
-                }
+                let _ = stdin.write_all(&bytes);
             }
 
             Packet::UserUpdate {
@@ -162,18 +157,13 @@ fn thread_receive_socket(
             }
 
             Packet::SessionExit => {
-                // Host explicitly exited the session
                 stop_flag.store(true, Ordering::Relaxed);
                 break;
             }
 
             Packet::SessionEnd => {
-                // Session recording ended, or session terminated by host
                 stop_flag.store(true, Ordering::Relaxed);
-                // Also send back SessionEnd to confirm receipt and allow host to close cleanly
-                if let Err(e) = channel.send(packet) {
-                    eprintln!("Error sending SessionEnd confirmation: {:?}", e);
-                }
+                channel.send(packet).unwrap();
                 break;
             }
 
@@ -182,7 +172,7 @@ fn thread_receive_socket(
                 chat_log_guard.push(message);
             }
 
-            _ => { /* Ignore other packet types for this scene */ }
+            _ => (),
         }
     })
 }

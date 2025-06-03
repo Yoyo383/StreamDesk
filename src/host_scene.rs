@@ -4,6 +4,7 @@ use h264_reader::{
     nal::{Nal, RefNal},
     push::NalInterest,
 };
+use log::info;
 use remote_desktop::{
     chat_ui, protocol::ControlPayload, secure_channel::SecureChannel, users_list, Scene,
     SceneChange, UserType,
@@ -598,6 +599,11 @@ impl Scene for HostScene {
                             username: controller.to_string(),
                         };
                         channel.send(deny_packet).unwrap();
+
+                        info!(
+                            "User {} is no longer the Controller of the session.",
+                            controller
+                        );
                     }
 
                     // send to allowed user
@@ -605,6 +611,11 @@ impl Scene for HostScene {
                         username: user_handled.to_string(),
                     };
                     channel.send(allow_packet).unwrap();
+
+                    info!(
+                        "User {} is now the Controller of the session.",
+                        user_handled
+                    );
 
                     // send Deny to all other users and clear
                     for user in requesting_control.iter() {
@@ -638,6 +649,8 @@ impl Scene for HostScene {
                                 username: user.to_string(),
                             };
                             channel.send(join_packet).unwrap();
+
+                            info!("User {} has joined the session.", user);
                         }
 
                         if ui.button("Deny").clicked() {
@@ -692,6 +705,11 @@ impl Scene for HostScene {
                     username: controller.to_string(),
                 };
                 channel.send(deny_packet).unwrap();
+
+                info!(
+                    "User {} is no longer the Controller of the session.",
+                    controller
+                );
             }
         }
 

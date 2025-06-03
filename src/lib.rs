@@ -12,6 +12,10 @@ use secure_channel::SecureChannel;
 pub mod protocol;
 pub mod secure_channel;
 
+pub const LOG_DIR: &'static str = "logs";
+pub const SERVER_LOG_FILE: &'static str = "server.log";
+pub const CLIENT_LOG_FILE: &'static str = "client.log";
+
 /// Maps an egui `Key` to a Windows virtual key code.
 ///
 /// This function is primarily used for converting egui keyboard input

@@ -1,12 +1,14 @@
 use std::net::TcpStream;
+use std::path::Path;
 use std::sync::mpsc::{self, Sender};
 use std::thread;
 
 use eframe::egui::Visuals;
 use eframe::{egui, NativeOptions};
+use ftail::Ftail;
 use login_scene::LoginScene;
 use remote_desktop::secure_channel::SecureChannel;
-use remote_desktop::{Scene, SceneChange};
+use remote_desktop::{Scene, SceneChange, CLIENT_LOG_FILE, LOG_DIR};
 
 mod host_scene;
 mod login_scene;
@@ -14,6 +16,9 @@ mod menu_scene;
 mod modifiers_state;
 mod participant_scene;
 mod watch_scene;
+
+const SERVER_IP: &'static str = "127.0.0.1";
+const SERVER_PORT: u16 = 7643;
 
 /// Starts a thread to connect to the server.
 ///
@@ -25,13 +30,15 @@ mod watch_scene;
 /// * `sender` - A `mpsc::Sender<Option<SecureChannel>>` used to send the
 ///              result of the connection attempt back to the main application thread.
 fn connect_to_server(sender: Sender<Option<SecureChannel>>) {
-    thread::spawn(move || match TcpStream::connect("127.0.0.1:7643") {
-        Ok(socket) => {
-            let channel = SecureChannel::new_client(Some(socket)).unwrap();
-            sender.send(Some(channel))
-        }
-        Err(_) => sender.send(None),
-    });
+    thread::spawn(
+        move || match TcpStream::connect(format!("{}:{}", SERVER_IP, SERVER_PORT)) {
+            Ok(socket) => {
+                let channel = SecureChannel::new_client(Some(socket)).unwrap();
+                sender.send(Some(channel))
+            }
+            Err(_) => sender.send(None),
+        },
+    );
 }
 
 /// The main application struct for the Remote Desktop client.
@@ -105,6 +112,16 @@ impl eframe::App for MyApp {
 /// This function initializes the `eframe` application, sets up window properties,
 /// and runs the `MyApp` instance.
 fn main() {
+    let _ = std::fs::create_dir(LOG_DIR);
+
+    let _ = Ftail::new()
+        .single_file(
+            &Path::new(LOG_DIR).join(CLIENT_LOG_FILE),
+            true,
+            log::LevelFilter::Off,
+        )
+        .init();
+
     let (width, height): (f32, f32) = (600.0 * 1920.0 / 1080.0, 600.0);
     let options = NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([width, height]),

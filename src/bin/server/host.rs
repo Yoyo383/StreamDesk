@@ -1,6 +1,7 @@
 use crate::{get_video_path, SessionHashMap, SharedSession};
 use chrono::Local;
 
+use log::info;
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use remote_desktop::{
@@ -145,6 +146,8 @@ pub fn handle_host(
 
                 // remove from pending
                 session.pending_join.remove(&username);
+
+                info!("User {} was denied from session {}.", username, code);
             }
 
             Packet::Screen { ref bytes } => {
@@ -161,6 +164,9 @@ pub fn handle_host(
 
                 let mut sessions = sessions.lock().unwrap();
                 sessions.remove(&code);
+
+                info!("Host ended session {}.", code);
+
                 break;
             }
 
@@ -181,6 +187,11 @@ pub fn handle_host(
                         username: username.to_string(),
                     };
                     session.broadcast_all(user_update)?;
+
+                    info!(
+                        "User {} is now the Controller of session {}.",
+                        username, code
+                    );
                 }
             }
 
@@ -204,6 +215,11 @@ pub fn handle_host(
                             username: username.to_string(),
                         };
                         session.broadcast_all(user_update)?;
+
+                        info!(
+                            "User {} is no longer the Controller of session {}.",
+                            username, code
+                        );
                     }
                 }
             }

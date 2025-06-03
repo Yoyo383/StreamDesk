@@ -1,6 +1,7 @@
 use std::sync::mpsc::Receiver;
 
 use eframe::egui::{self, Align, Color32, FontId, Layout, RichText, SelectableLabel, TextEdit};
+use log::info;
 use remote_desktop::{
     protocol::{Packet, ResultPacket},
     secure_channel::SecureChannel,
@@ -110,11 +111,15 @@ impl LoginScene {
                 SceneChange::None
             }
 
-            ResultPacket::Success(_) => SceneChange::To(Box::new(MenuScene::new(
-                self.login_username.clone(),
-                channel,
-                "",
-            ))),
+            ResultPacket::Success(_) => {
+                info!("Logged in as {}.", self.login_username);
+
+                SceneChange::To(Box::new(MenuScene::new(
+                    self.login_username.clone(),
+                    channel,
+                    "",
+                )))
+            }
         }
     }
 
@@ -181,11 +186,15 @@ impl LoginScene {
                 SceneChange::None
             }
 
-            ResultPacket::Success(_) => SceneChange::To(Box::new(MenuScene::new(
-                self.register_username.clone(),
-                channel,
-                "",
-            ))),
+            ResultPacket::Success(_) => {
+                info!("Registered as {}.", self.register_username);
+
+                SceneChange::To(Box::new(MenuScene::new(
+                    self.register_username.clone(),
+                    channel,
+                    "",
+                )))
+            }
         }
     }
 }

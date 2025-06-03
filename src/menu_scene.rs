@@ -6,6 +6,7 @@ use std::{
 
 use chrono::{DateTime, Local};
 use eframe::egui::{self, Align, Button, Color32, FontId, Layout, RichText, TextEdit, Ui};
+use log::info;
 use remote_desktop::{
     protocol::{Packet, ResultPacket},
     secure_channel::SecureChannel,
@@ -176,6 +177,8 @@ impl MenuScene {
                 self.join_receiver = Some(receiver);
                 self.is_disabled = true;
 
+                info!("User requested to join session {}.", session_code);
+
                 thread::spawn(move || {
                     let result = channel.receive().unwrap();
 
@@ -218,6 +221,8 @@ impl Scene for MenuScene {
 
                 match join_result {
                     true => {
+                        info!("Joining session {}.", self.session_code);
+
                         result = SceneChange::To(Box::new(ParticipantScene::new(
                             channel,
                             self.username.clone(),
@@ -225,6 +230,11 @@ impl Scene for MenuScene {
                     }
 
                     false => {
+                        info!(
+                            "Host of session {} denied the join request.",
+                            self.session_code
+                        );
+
                         self.is_error = true;
                         self.status_message = msg
                     }
@@ -278,7 +288,7 @@ impl Scene for MenuScene {
                     let time: DateTime<Local> = recording.parse().unwrap();
                     let recording_display_name = time.format("%B %-d, %Y | %T").to_string();
 
-                    if ui.button(recording_display_name).clicked() {
+                    if ui.button(&recording_display_name).clicked() {
                         channel.send(Packet::WatchRecording { id: *id }).unwrap();
 
                         let result_packet = channel.receive().unwrap();
@@ -292,6 +302,9 @@ impl Scene for MenuScene {
                             ResultPacket::Success(duration) => {
                                 let duration: i32 =
                                     duration.parse().expect("duration should be i32");
+
+                                info!("Watching recording {}.", &recording_display_name);
+
                                 result = SceneChange::To(Box::new(WatchScene::new(
                                     self.username.clone(),
                                     duration,

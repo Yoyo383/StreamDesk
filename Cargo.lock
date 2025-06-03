@@ -1268,6 +1268,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "795cbfc56d419a7ce47ccbb7504dd9a5b7c484c083c356e797de08bd988d9629"
 
 [[package]]
+name = "ftail"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6aba7adfd4915e165ee87662f23fa01a4c530c5ac79c8fb2f7d160cdf0fa30d6"
+dependencies = [
+ "chrono",
+ "log",
+]
+
+[[package]]
 name = "futures-core"
 version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2946,7 +2956,9 @@ dependencies = [
  "chrono",
  "eframe",
  "egui_extras",
+ "ftail",
  "h264-reader",
+ "log",
  "md5",
  "r2d2",
  "r2d2_sqlite",

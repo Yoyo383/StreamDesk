@@ -1,3 +1,4 @@
+use log::info;
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use remote_desktop::{
@@ -38,6 +39,8 @@ pub fn login_or_register(
                     let result = ResultPacket::Success("Signing in".to_owned());
                     channel.send(result)?;
 
+                    info!("User \"{}\" logged in.", username);
+
                     Ok(Some((username, user_id)))
                 }
                 Err(rusqlite::Error::QueryReturnedNoRows) => {
@@ -59,6 +62,8 @@ pub fn login_or_register(
             if username.is_empty() {
                 let result = ResultPacket::Failure("Username cannot be empty.".to_string());
                 channel.send(result)?;
+
+                info!("User \"{}\" registered.", username);
 
                 return Ok(None);
             }

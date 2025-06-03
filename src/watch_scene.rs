@@ -28,7 +28,7 @@ const BACKWARD_IMAGE: ImageSource = egui::include_image!("../images/backward.svg
 ///
 /// # Returns
 ///
-/// A *`Child`* process handle representing the spawned FFmpeg instance.
+/// A `Child` process handle representing the spawned FFmpeg instance.
 /// - The process is configured with piped stdin and stdout for data communication.
 /// - stderr is redirected to null to suppress FFmpeg diagnostic output.
 ///
@@ -70,19 +70,19 @@ fn start_ffmpeg() -> Child {
 ///
 /// # Arguments
 ///
-/// * *`channel`* - A *`SecureChannel`* for receiving packets from the remote source.
-/// * *`stdin`* - A *`ChildStdin`* handle to the FFmpeg process for writing H.264 data.
+/// * `channel` - A `SecureChannel` for receiving packets from the remote source.
+/// * `stdin` - A `ChildStdin` handle to the FFmpeg process for writing H.264 data.
 ///
 /// # Returns
 ///
-/// A *`JoinHandle<()>`* for the spawned thread that can be used to wait for
+/// A `JoinHandle<()>` for the spawned thread that can be used to wait for
 /// completion or join the thread when cleaning up resources.
 ///
 /// # Behavior
 ///
-/// - *`Packet::Screen`* packets: H.264 data is written to FFmpeg stdin
-/// - *`Packet::None`* packets: Closes the FFmpeg stdin stream
-/// - *`Packet::SeekInit`* or *`Packet::SessionExit`*: Terminates the thread
+/// - `Packet::Screen` packets: H.264 data is written to FFmpeg stdin
+/// - `Packet::None` packets: Closes the FFmpeg stdin stream
+/// - `Packet::SeekInit` or `Packet::SessionExit`: Terminates the thread
 /// - Other packet types are ignored
 fn thread_receive_socket(mut channel: SecureChannel, stdin: ChildStdin) -> JoinHandle<()> {
     thread::spawn(move || {
@@ -120,14 +120,14 @@ fn thread_receive_socket(mut channel: SecureChannel, stdin: ChildStdin) -> JoinH
 ///
 /// # Arguments
 ///
-/// * *`stdout`* - A *`ChildStdout`* handle to read decoded RGBA data from FFmpeg.
-/// * *`frame_queue`* - An *`Arc<(Mutex<VecDeque<Vec<u8>>>, Condvar)>`* for thread-safe
+/// * `stdout` - A `ChildStdout` handle to read decoded RGBA data from FFmpeg.
+/// * `frame_queue` - An `Arc<(Mutex<VecDeque<Vec<u8>>>, Condvar)>` for thread-safe
 ///                     frame storage with synchronization primitives.
-/// * *`stop_flag`* - An *`Arc<AtomicBool>`* for signaling thread termination.
+/// * `stop_flag` - An `Arc<AtomicBool>` for signaling thread termination.
 ///
 /// # Returns
 ///
-/// A *`JoinHandle<()>`* for the spawned thread that handles frame reading and
+/// A `JoinHandle<()>` for the spawned thread that handles frame reading and
 /// queue management in the background.
 ///
 /// # Behavior
@@ -180,7 +180,7 @@ pub struct WatchScene {
     /// Accumulated time since last frame update
     elapsed_time: f32,
 
-    /// Username of the current session
+    /// Username of the user
     username: String,
     /// Total duration of the recording in frames
     duration: i32,
@@ -206,7 +206,7 @@ pub struct WatchScene {
 }
 
 impl WatchScene {
-    /// Creates a new *`WatchScene`* instance and initializes the video playback system.
+    /// Creates a new `WatchScene` instance and initializes the video playback system.
     ///
     /// This constructor sets up the complete video playback pipeline including FFmpeg
     /// process spawning, background thread creation for network reception and frame
@@ -214,13 +214,13 @@ impl WatchScene {
     ///
     /// # Arguments
     ///
-    /// * *`username`* - A *`String`* containing the username for the current session.
-    /// * *`duration`* - An *`i32`* representing the total recording duration in frames.
-    /// * *`channel`* - A mutable reference to *`SecureChannel`* for network communication.
+    /// * `username` - A `String` containing the username for the current session.
+    /// * `duration` - An `i32` representing the total recording duration in frames.
+    /// * `channel` - A mutable reference to `SecureChannel` for network communication.
     ///
     /// # Returns
     ///
-    /// A new *`Self`* instance with all components initialized and background
+    /// A new `Self` instance with all components initialized and background
     /// threads started for immediate video playback capability.
     pub fn new(username: String, duration: i32, channel: &mut SecureChannel) -> Self {
         let mut ffmpeg = start_ffmpeg();
@@ -263,8 +263,8 @@ impl WatchScene {
     ///
     /// # Arguments
     ///
-    /// * *`ui`* - A mutable reference to *`Ui`* for rendering operations.
-    /// * *`ctx`* - A reference to *`egui::Context`* for texture management.
+    /// * `ui` - A mutable reference to `Ui` for rendering operations.
+    /// * `ctx` - A reference to `egui::Context` for texture management.
     ///
     /// # Behavior
     ///
@@ -314,17 +314,17 @@ impl WatchScene {
     ///
     /// # Arguments
     ///
-    /// * *`delta`* - An *`i32`* representing the number of seconds to seek (positive
+    /// * `delta` - An `i32` representing the number of seconds to seek (positive
     ///               for forward, negative for backward).
-    /// * *`channel`* - A mutable reference to *`SecureChannel`* for server communication.
+    /// * `channel` - A mutable reference to `SecureChannel` for server communication.
     ///
     /// # Behavior
     ///
-    /// - Sends *`Packet::SeekInit`* to notify the server of seek operation
+    /// - Sends `Packet::SeekInit` to notify the server of seek operation
     /// - Stops all background threads and clears frame queue
     /// - Terminates current FFmpeg process
     /// - Calculates new position with bounds checking (0 to duration/30)
-    /// - Sends *`Packet::SeekTo`* with new timestamp
+    /// - Sends `Packet::SeekTo` with new timestamp
     /// - Restarts FFmpeg and background threads for new position
     fn seek_recording(&mut self, delta: i32, channel: &mut SecureChannel) {
         // send seek init
