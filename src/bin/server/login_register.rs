@@ -64,8 +64,6 @@ pub fn login_or_register(
                 let result = ResultPacket::Failure("Username cannot be empty.".to_string());
                 channel.send(result)?;
 
-                info!(target: LOG_TARGET, "User \"{}\" registered.", username);
-
                 return Ok(None);
             }
 
@@ -96,6 +94,8 @@ pub fn login_or_register(
                 Ok(_) => {
                     let result = ResultPacket::Success("Signing in".to_owned());
                     channel.send(result)?;
+
+                    info!(target: LOG_TARGET, "User \"{}\" registered.", username);
 
                     let user_id = db_pool.get().unwrap().last_insert_rowid() as i32;
 
