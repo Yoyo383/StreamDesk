@@ -4,6 +4,7 @@ use r2d2_sqlite::SqliteConnectionManager;
 use remote_desktop::{
     protocol::{Packet, ResultPacket},
     secure_channel::SecureChannel,
+    LOG_TARGET,
 };
 use rusqlite::{ffi::SQLITE_CONSTRAINT_UNIQUE, params, Error::SqliteFailure};
 
@@ -39,7 +40,7 @@ pub fn login_or_register(
                     let result = ResultPacket::Success("Signing in".to_owned());
                     channel.send(result)?;
 
-                    info!("User \"{}\" logged in.", username);
+                    info!(target: LOG_TARGET, "User \"{}\" logged in.", username);
 
                     Ok(Some((username, user_id)))
                 }
@@ -63,7 +64,7 @@ pub fn login_or_register(
                 let result = ResultPacket::Failure("Username cannot be empty.".to_string());
                 channel.send(result)?;
 
-                info!("User \"{}\" registered.", username);
+                info!(target: LOG_TARGET, "User \"{}\" registered.", username);
 
                 return Ok(None);
             }

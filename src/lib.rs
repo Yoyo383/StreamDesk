@@ -1,20 +1,39 @@
 use core::f32;
-use std::{collections::HashMap, sync::MutexGuard};
+use std::{collections::HashMap, path::Path, sync::MutexGuard};
 
 use eframe::egui::{
     self,
     text::{LayoutJob, TextWrapping},
     Color32, FontId, Key, Pos2, Rect, RichText, ScrollArea, TextFormat, Ui,
 };
+use ftail::Ftail;
 use protocol::Packet;
 use secure_channel::SecureChannel;
 
 pub mod protocol;
 pub mod secure_channel;
 
+pub const LOG_TARGET: &'static str = "remote_desktop";
 pub const LOG_DIR: &'static str = "logs";
 pub const SERVER_LOG_FILE: &'static str = "server.log";
 pub const CLIENT_LOG_FILE: &'static str = "client.log";
+
+/// Initializes the logger.
+///
+/// # Arguments
+///
+/// * `log_file` - The file to log to.
+pub fn initialize_logger(log_file: &str) {
+    let _ = Ftail::new()
+        .console(log::LevelFilter::Info)
+        .single_file(
+            &Path::new(LOG_DIR).join(log_file),
+            true,
+            log::LevelFilter::Info,
+        )
+        .filter_targets(vec![LOG_TARGET])
+        .init();
+}
 
 /// Maps an egui `Key` to a Windows virtual key code.
 ///

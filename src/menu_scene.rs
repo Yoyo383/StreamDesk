@@ -10,7 +10,7 @@ use log::info;
 use remote_desktop::{
     protocol::{Packet, ResultPacket},
     secure_channel::SecureChannel,
-    Scene, SceneChange,
+    Scene, SceneChange, LOG_TARGET,
 };
 
 use crate::{
@@ -177,7 +177,7 @@ impl MenuScene {
                 self.join_receiver = Some(receiver);
                 self.is_disabled = true;
 
-                info!("User requested to join session {}.", session_code);
+                info!(target: LOG_TARGET, "User requested to join session {}.", session_code);
 
                 thread::spawn(move || {
                     let result = channel.receive().unwrap();
@@ -221,7 +221,7 @@ impl Scene for MenuScene {
 
                 match join_result {
                     true => {
-                        info!("Joining session {}.", self.session_code);
+                        info!(target: LOG_TARGET, "Joining session {}.", self.session_code);
 
                         result = SceneChange::To(Box::new(ParticipantScene::new(
                             channel,
@@ -231,6 +231,7 @@ impl Scene for MenuScene {
 
                     false => {
                         info!(
+                            target: LOG_TARGET,
                             "Host of session {} denied the join request.",
                             self.session_code
                         );
@@ -265,6 +266,8 @@ impl Scene for MenuScene {
                         .clicked()
                     {
                         channel.send(Packet::SignOut).unwrap();
+
+                        info!(target: LOG_TARGET, "User signed out.");
 
                         result = SceneChange::To(Box::new(LoginScene::new(None, true)));
                     }
@@ -303,7 +306,7 @@ impl Scene for MenuScene {
                                 let duration: i32 =
                                     duration.parse().expect("duration should be i32");
 
-                                info!("Watching recording {}.", &recording_display_name);
+                                info!(target: LOG_TARGET, "Watching recording {}.", &recording_display_name);
 
                                 result = SceneChange::To(Box::new(WatchScene::new(
                                     self.username.clone(),

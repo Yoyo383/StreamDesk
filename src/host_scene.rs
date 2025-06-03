@@ -7,7 +7,7 @@ use h264_reader::{
 use log::info;
 use remote_desktop::{
     chat_ui, protocol::ControlPayload, secure_channel::SecureChannel, users_list, Scene,
-    SceneChange, UserType,
+    SceneChange, UserType, LOG_TARGET,
 };
 
 use eframe::egui::PointerButton;
@@ -601,6 +601,7 @@ impl Scene for HostScene {
                         channel.send(deny_packet).unwrap();
 
                         info!(
+                            target: LOG_TARGET,
                             "User {} is no longer the Controller of the session.",
                             controller
                         );
@@ -613,6 +614,7 @@ impl Scene for HostScene {
                     channel.send(allow_packet).unwrap();
 
                     info!(
+                        target: LOG_TARGET,
                         "User {} is now the Controller of the session.",
                         user_handled
                     );
@@ -650,7 +652,7 @@ impl Scene for HostScene {
                             };
                             channel.send(join_packet).unwrap();
 
-                            info!("User {} has joined the session.", user);
+                            info!(target: LOG_TARGET, "User {} has joined the session.", user);
                         }
 
                         if ui.button("Deny").clicked() {
@@ -707,6 +709,7 @@ impl Scene for HostScene {
                 channel.send(deny_packet).unwrap();
 
                 info!(
+                    target: LOG_TARGET,
                     "User {} is no longer the Controller of the session.",
                     controller
                 );

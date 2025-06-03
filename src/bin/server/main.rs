@@ -1,4 +1,3 @@
-use ftail::Ftail;
 use host::handle_host;
 use log::info;
 use login_register::login_or_register;
@@ -7,14 +6,15 @@ use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rand::Rng;
 use remote_desktop::{
+    initialize_logger,
     protocol::{Packet, ResultPacket},
     secure_channel::SecureChannel,
-    UserType, LOG_DIR, SERVER_LOG_FILE,
+    UserType, LOG_DIR, LOG_TARGET, SERVER_LOG_FILE,
 };
 use std::{
     collections::HashMap,
     net::TcpListener,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::Command,
     sync::{
         mpsc::{self},
@@ -73,7 +73,7 @@ fn generate_session_code(sessions: &HashMap<u32, SharedSession>) -> u32 {
     let mut rng = rand::rng();
     loop {
         let code: u32 = rng.random_range(100_000..1_000_000); // Generates a 6-digit number
-        println!("{}", code);
+
         if !sessions.contains_key(&code) {
             return code;
         }
@@ -242,7 +242,7 @@ fn handle_client(
 
                 match packet {
                     Packet::SignOut => {
-                        info!("User {} signed out.", username);
+                        info!(target: LOG_TARGET, "User {} signed out.", username);
                         break 'menu_scene;
                     }
 
@@ -266,6 +266,7 @@ fn handle_client(
                         channel.send(ResultPacket::Success(format!("{}", code)))?;
 
                         info!(
+                            target: LOG_TARGET,
                             "User {} started hosting a session with code {}.",
                             username, code
                         );
@@ -325,11 +326,11 @@ fn handle_client(
 
                             drop(session_guard);
 
-                            info!("User {} requested to join session {}.", username, code);
+                            info!(target: LOG_TARGET, "User {} requested to join session {}.", username, code);
 
                             // if host allowed user then continue
                             if receiver.recv().unwrap() {
-                                info!("User {} was allowed to join session {}.", username, code);
+                                info!(target: LOG_TARGET, "User {} was allowed to join session {}.", username, code);
                                 handle_participant(
                                     &mut channel,
                                     session.clone(),
@@ -360,6 +361,7 @@ fn handle_client(
                                     channel.send(success)?;
 
                                     info!(
+                                        target: LOG_TARGET,
                                         "User {} is watching recording {}.mp4.",
                                         username, recording.filename
                                     );
@@ -407,13 +409,7 @@ fn main() {
     let _ = std::fs::create_dir(LOG_DIR);
     let _ = std::fs::create_dir(RECORDINGS_FOLDER);
 
-    let _ = Ftail::new()
-        .single_file(
-            &Path::new(LOG_DIR).join(SERVER_LOG_FILE),
-            true,
-            log::LevelFilter::Off,
-        )
-        .init();
+    initialize_logger(SERVER_LOG_FILE);
 
     let db_manager = SqliteConnectionManager::file(DATABASE_FILE);
     let db_pool = Arc::new(r2d2::Pool::new(db_manager).unwrap());

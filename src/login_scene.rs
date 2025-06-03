@@ -5,7 +5,7 @@ use log::info;
 use remote_desktop::{
     protocol::{Packet, ResultPacket},
     secure_channel::SecureChannel,
-    Scene, SceneChange,
+    Scene, SceneChange, LOG_TARGET,
 };
 
 use crate::menu_scene::MenuScene;
@@ -112,7 +112,7 @@ impl LoginScene {
             }
 
             ResultPacket::Success(_) => {
-                info!("Logged in as {}.", self.login_username);
+                info!(target: LOG_TARGET, "Logged in as {}.", self.login_username);
 
                 SceneChange::To(Box::new(MenuScene::new(
                     self.login_username.clone(),
@@ -187,7 +187,7 @@ impl LoginScene {
             }
 
             ResultPacket::Success(_) => {
-                info!("Registered as {}.", self.register_username);
+                info!(target: LOG_TARGET, "Registered as {}.", self.register_username);
 
                 SceneChange::To(Box::new(MenuScene::new(
                     self.register_username.clone(),

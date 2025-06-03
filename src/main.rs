@@ -1,14 +1,12 @@
 use std::net::TcpStream;
-use std::path::Path;
 use std::sync::mpsc::{self, Sender};
 use std::thread;
 
 use eframe::egui::Visuals;
 use eframe::{egui, NativeOptions};
-use ftail::Ftail;
 use login_scene::LoginScene;
 use remote_desktop::secure_channel::SecureChannel;
-use remote_desktop::{Scene, SceneChange, CLIENT_LOG_FILE, LOG_DIR};
+use remote_desktop::{initialize_logger, Scene, SceneChange, CLIENT_LOG_FILE, LOG_DIR};
 
 mod host_scene;
 mod login_scene;
@@ -114,13 +112,7 @@ impl eframe::App for MyApp {
 fn main() {
     let _ = std::fs::create_dir(LOG_DIR);
 
-    let _ = Ftail::new()
-        .single_file(
-            &Path::new(LOG_DIR).join(CLIENT_LOG_FILE),
-            true,
-            log::LevelFilter::Off,
-        )
-        .init();
+    initialize_logger(CLIENT_LOG_FILE);
 
     let (width, height): (f32, f32) = (600.0 * 1920.0 / 1080.0, 600.0);
     let options = NativeOptions {
