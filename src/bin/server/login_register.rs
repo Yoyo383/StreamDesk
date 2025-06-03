@@ -1,12 +1,12 @@
 use log::info;
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
-use remote_desktop::{
+use rusqlite::{ffi::SQLITE_CONSTRAINT_UNIQUE, params, Error::SqliteFailure};
+use stream_desk::{
     protocol::{Packet, ResultPacket},
     secure_channel::SecureChannel,
     LOG_TARGET,
 };
-use rusqlite::{ffi::SQLITE_CONSTRAINT_UNIQUE, params, Error::SqliteFailure};
 
 /// Handles logging in and registering to the server.
 ///

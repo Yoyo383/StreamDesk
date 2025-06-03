@@ -5,13 +5,12 @@ use h264_reader::{
     push::NalInterest,
 };
 use log::info;
-use remote_desktop::{
+use stream_desk::{
     chat_ui, protocol::ControlPayload, secure_channel::SecureChannel, users_list, Scene,
     SceneChange, UserType, LOG_TARGET,
 };
 
 use eframe::egui::PointerButton;
-use remote_desktop::protocol::Packet;
 use std::{
     collections::{HashMap, HashSet},
     io::Read,
@@ -22,6 +21,7 @@ use std::{
     },
     thread::{self, JoinHandle},
 };
+use stream_desk::protocol::Packet;
 use winapi::um::winuser::{
     self, SendInput, INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, MOUSEINPUT, WHEEL_DELTA,
 };

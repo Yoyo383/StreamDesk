@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::mpsc::Sender};
 
-use remote_desktop::{protocol::Packet, secure_channel::SecureChannel, UserType};
+use stream_desk::{protocol::Packet, secure_channel::SecureChannel, UserType};
 
 /// Represents a recording, with a filename and a timestamp.
 pub struct Recording {

@@ -7,7 +7,7 @@ use std::{
 use chrono::{DateTime, Local};
 use eframe::egui::{self, Align, Button, Color32, FontId, Layout, RichText, TextEdit, Ui};
 use log::info;
-use remote_desktop::{
+use stream_desk::{
     protocol::{Packet, ResultPacket},
     secure_channel::SecureChannel,
     Scene, SceneChange, LOG_TARGET,
@@ -245,7 +245,7 @@ impl Scene for MenuScene {
 
         egui::TopBottomPanel::top("title_bar").show(ctx, |ui| {
             ui.with_layout(Layout::top_down(Align::Center), |ui| {
-                ui.label(RichText::new("Remote Desktop").size(40.0));
+                ui.label(RichText::new("Stream Desk").size(40.0));
             })
         });
 

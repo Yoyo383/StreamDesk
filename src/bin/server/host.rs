@@ -4,15 +4,15 @@ use chrono::Local;
 use log::info;
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
-use remote_desktop::{
-    protocol::{Packet, ResultPacket},
-    secure_channel::SecureChannel,
-    UserType, LOG_TARGET,
-};
 use rusqlite::params;
 use std::{
     io::Write,
     process::{Child, Command, Stdio},
+};
+use stream_desk::{
+    protocol::{Packet, ResultPacket},
+    secure_channel::SecureChannel,
+    UserType, LOG_TARGET,
 };
 
 /// Starts an `ffmpeg` process that saves the recording to file at the end of the session.

@@ -13,7 +13,7 @@ use secure_channel::SecureChannel;
 pub mod protocol;
 pub mod secure_channel;
 
-pub const LOG_TARGET: &'static str = "remote_desktop";
+pub const LOG_TARGET: &'static str = "stream-desk";
 pub const LOG_DIR: &'static str = "logs";
 pub const SERVER_LOG_FILE: &'static str = "server.log";
 pub const CLIENT_LOG_FILE: &'static str = "client.log";

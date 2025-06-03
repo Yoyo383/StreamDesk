@@ -1,4 +1,4 @@
-use remote_desktop::{protocol::Packet, secure_channel::SecureChannel, UserType};
+use stream_desk::{protocol::Packet, secure_channel::SecureChannel, UserType};
 
 use crate::SharedSession;
 

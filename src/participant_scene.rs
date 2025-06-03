@@ -1,7 +1,7 @@
 use eframe::egui::{self, pos2, Color32, Rect, Sense, Stroke, Ui, Vec2};
-use remote_desktop::protocol::{ControlPayload, Packet};
-use remote_desktop::secure_channel::SecureChannel;
-use remote_desktop::{
+use stream_desk::protocol::{ControlPayload, Packet};
+use stream_desk::secure_channel::SecureChannel;
+use stream_desk::{
     chat_ui, egui_key_to_vk, normalize_mouse_position, users_list, Scene, SceneChange, UserType,
 };
 

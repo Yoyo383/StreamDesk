@@ -11,7 +11,7 @@ use std::{
 };
 
 use eframe::egui::{self, pos2, Color32, ImageSource, Rect, Sense, Stroke, Ui, Vec2};
-use remote_desktop::{protocol::Packet, secure_channel::SecureChannel, Scene, SceneChange};
+use stream_desk::{protocol::Packet, secure_channel::SecureChannel, Scene, SceneChange};
 
 use crate::menu_scene::MenuScene;
 

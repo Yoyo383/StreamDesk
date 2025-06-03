@@ -5,8 +5,8 @@ use std::thread;
 use eframe::egui::Visuals;
 use eframe::{egui, NativeOptions};
 use login_scene::LoginScene;
-use remote_desktop::secure_channel::SecureChannel;
-use remote_desktop::{initialize_logger, Scene, SceneChange, CLIENT_LOG_FILE, LOG_DIR};
+use stream_desk::secure_channel::SecureChannel;
+use stream_desk::{initialize_logger, Scene, SceneChange, CLIENT_LOG_FILE, LOG_DIR};
 
 mod host_scene;
 mod login_scene;
@@ -122,7 +122,7 @@ fn main() {
     };
 
     let _ = eframe::run_native(
-        "Remote Desktop",
+        "StreamDesk",
         options,
         Box::new(move |cc| {
             cc.egui_ctx.set_visuals(Visuals::dark());

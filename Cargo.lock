@@ -2949,27 +2949,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "remote_desktop"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "chrono",
- "eframe",
- "egui_extras",
- "ftail",
- "h264-reader",
- "log",
- "md5",
- "r2d2",
- "r2d2_sqlite",
- "rand 0.9.1",
- "rsa",
- "rusqlite",
- "uuid",
- "winapi",
-]
-
-[[package]]
 name = "renderdoc-sys"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3366,6 +3345,27 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+
+[[package]]
+name = "stream-desk"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "chrono",
+ "eframe",
+ "egui_extras",
+ "ftail",
+ "h264-reader",
+ "log",
+ "md5",
+ "r2d2",
+ "r2d2_sqlite",
+ "rand 0.9.1",
+ "rsa",
+ "rusqlite",
+ "uuid",
+ "winapi",
+]
 
 [[package]]
 name = "strict-num"

@@ -5,7 +5,7 @@ use h264_reader::{
     push::NalInterest,
 };
 
-use remote_desktop::{protocol::Packet, secure_channel::SecureChannel};
+use stream_desk::{protocol::Packet, secure_channel::SecureChannel};
 
 use std::{
     io::Read,

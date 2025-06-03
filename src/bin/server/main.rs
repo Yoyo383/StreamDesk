@@ -5,12 +5,6 @@ use participant::handle_participant;
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rand::Rng;
-use remote_desktop::{
-    initialize_logger,
-    protocol::{Packet, ResultPacket},
-    secure_channel::SecureChannel,
-    UserType, LOG_DIR, LOG_TARGET, SERVER_LOG_FILE,
-};
 use std::{
     collections::HashMap,
     net::TcpListener,
@@ -21,6 +15,12 @@ use std::{
         Arc, Mutex,
     },
     thread::{self},
+};
+use stream_desk::{
+    initialize_logger,
+    protocol::{Packet, ResultPacket},
+    secure_channel::SecureChannel,
+    UserType, LOG_DIR, LOG_TARGET, SERVER_LOG_FILE,
 };
 use structs::*;
 use watch::handle_watching;
