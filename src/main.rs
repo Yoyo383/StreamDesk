@@ -2,7 +2,6 @@ use std::net::TcpStream;
 use std::sync::mpsc::{self, Sender};
 use std::thread;
 
-use eframe::egui::Visuals;
 use eframe::{egui, NativeOptions};
 use login_scene::LoginScene;
 use stream_desk::secure_channel::SecureChannel;
@@ -125,7 +124,7 @@ fn main() {
         "StreamDesk",
         options,
         Box::new(move |cc| {
-            cc.egui_ctx.set_visuals(Visuals::dark());
+            cc.egui_ctx.set_theme(egui::Theme::Dark);
             egui_extras::install_image_loaders(&cc.egui_ctx);
             Ok(Box::new(MyApp::new()))
         }),
